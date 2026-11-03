@@ -1,6 +1,6 @@
 .PHONY: build test test-unit cover cover-html fmt vet clean help
 
-BINARY := myaction
+BINARY := agentic-workflow-guard
 
 ## Build
 

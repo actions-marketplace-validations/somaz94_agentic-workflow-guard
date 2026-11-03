@@ -1,0 +1,106 @@
+# Known AI agent actions and the inputs that decide how much an injected prompt
+# can do. A new agent, or a renamed input, is an edit here and not in the code.
+#
+# power is the default capability: limited, scoped or broad. A pattern is a
+# case-insensitive regular expression matched against an input's value.
+agents:
+  - id: claude
+    uses: [anthropics/claude-code-action]
+    # Refuses an actor without write access unless wildcard_inputs says otherwise.
+    actor_check: true
+    power: scoped
+    wildcard_inputs: [allowed_non_write_users]
+    bot_wildcard_inputs: [allowed_bots]
+    full_output_inputs: [show_full_output]
+    tool_inputs: [claude_args, settings]
+    broad_when:
+      - {input: claude_args, pattern: '--dangerously-skip-permissions|bypassPermissions'}
+      - {input: settings, pattern: 'bypassPermissions'}
+
+  - id: codex
+    uses: [openai/codex-action]
+    actor_check: true
+    power: scoped
+    wildcard_inputs: [allow-users]
+    limited_when:
+      - {input: sandbox, pattern: '^read-only$'}
+      - {input: permission-profile, pattern: 'read-only'}
+      - {input: safety-strategy, pattern: '^read-only$'}
+    broad_when:
+      - {input: safety-strategy, pattern: '^unsafe$'}
+      - {input: sandbox, pattern: 'danger-full-access'}
+      - {input: codex-args, pattern: 'danger-full-access|dangerously-bypass'}
+
+  - id: gemini
+    uses: [google-github-actions/run-gemini-cli, google-gemini/gemini-cli-action]
+    actor_check: false
+    power: scoped
+    settings_input: settings
+    broad_when:
+      - {input: gemini_args, pattern: '(^|\s)(--yes|-y|--yolo)(\s|$)'}
+      - {input: settings, pattern: '"approval-?mode"\s*:\s*"yolo"'}
+    broad_when_env:
+      - {input: GEMINI_CLI_AUTO_APPROVE, pattern: '^true$'}
+
+  - id: inference
+    uses: [actions/ai-inference, github/ai-inference]
+    actor_check: false
+    # Without these inputs the model returns text and has no tools.
+    power: limited
+    broad_when:
+      - {input: copilot-allow-tools, pattern: '.'}
+      - {input: enable-github-mcp, pattern: '^true$'}
+
+# Payload fields written by whoever triggered the run. The object name decides
+# which events can carry the field.
+untrusted_contexts:
+  - github\.event\.issue\.(title|body)
+  - github\.event\.comment\.body
+  - github\.event\.discussion\.(title|body)
+  - github\.event\.pull_request\.(title|body|head\.ref|head\.label)
+  - github\.event\.workflow_run\.(head_branch|head_commit\.message)
+  - github\.head_ref
+
+# A Bash permission on one of these commands runs arbitrary programs, however
+# narrow it reads: `find -exec`, `xargs`, `env`, an interpreter, a build tool.
+exec_equivalent_commands:
+  - awk
+  - bash
+  - bun
+  - cargo
+  - curl
+  - deno
+  - docker
+  - env
+  - find
+  - git
+  - go
+  - make
+  - node
+  - npm
+  - npx
+  - perl
+  - php
+  - pip
+  - pnpm
+  - python
+  - python3
+  - ruby
+  - sed
+  - sh
+  - sudo
+  - tar
+  - uv
+  - uvx
+  - wget
+  - xargs
+  - yarn
+  - zsh
+
+# Prior steps or jobs matching this can enforce authorization at run time, in a
+# way an `if:` does not show. Findings behind one are reported as unverified.
+authorization_pattern: 'author_association|getCollaboratorPermissionLevel|collaborators/|checkMembership|/members/|check-user-permission|check-actor-permission|action-repository-permission'
+
+# Credential shapes that must never sit in a committed agent config. Matched
+# values are never echoed into a finding.
+secret_pattern: '(ghp|gho|ghs|ghu)_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}'

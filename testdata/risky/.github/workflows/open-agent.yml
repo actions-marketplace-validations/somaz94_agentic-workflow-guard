@@ -1,0 +1,21 @@
+name: Agent anyone can start
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  agent:
+    # The gate sits on the comment branch only, so opening an issue skips it.
+    if: >
+      github.event_name == 'issues' ||
+      github.event.comment.author_association == 'OWNER'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          allowed_non_write_users: '*'
+          claude_args: --allowedTools "Bash(find:*),Read"

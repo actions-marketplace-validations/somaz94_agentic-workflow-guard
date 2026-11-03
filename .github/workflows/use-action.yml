@@ -1,0 +1,81 @@
+name: Smoke Test (Released Action)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run:
+        description: 'workflow run'
+        required: true
+        default: 'true'
+  workflow_run:
+    workflows: ["Create release"]
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: use-action-smoke-test
+  cancel-in-progress: false
+
+jobs:
+  smoke-test-clean:
+    name: Smoke Test (Clean)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # `Create release` also runs as the pre-tag image-seeding dispatch, when @v1
+    # still resolves to the previous release; smoke-test only the tag-push run.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Scan the gated fixture
+        id: scan
+        uses: somaz94/agentic-workflow-guard@v1
+        with:
+          path: testdata/clean
+
+      - name: Verify Output
+        env:
+          FINDINGS: ${{ steps.scan.outputs.findings }}
+        run: |
+          set -euo pipefail
+          if [ "$FINDINGS" != "0" ]; then
+            echo "FAIL: expected no findings, got $FINDINGS"
+            exit 1
+          fi
+          echo "PASS: gated agent produces no findings"
+
+  smoke-test-risky:
+    name: Smoke Test (Risky)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [smoke-test-clean]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Scan the risky fixture and write SARIF
+        id: scan
+        uses: somaz94/agentic-workflow-guard@v1
+        with:
+          path: testdata/risky
+          fail_on: none
+          sarif_file: results.sarif
+
+      - name: Verify Output
+        env:
+          HIGH: ${{ steps.scan.outputs.high }}
+        run: |
+          set -euo pipefail
+          if [ "$HIGH" = "0" ]; then
+            echo "FAIL: expected high findings"
+            exit 1
+          fi
+          test "$(jq -r '.version' results.sarif)" = "2.1.0"
+          echo "PASS: risky fixture reported and SARIF written"

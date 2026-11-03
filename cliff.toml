@@ -43,4 +43,4 @@ commit_parsers = [
 
 [remote.github]
 owner = "somaz94"
-repo = "template-go-action"
+repo = "agentic-workflow-guard"

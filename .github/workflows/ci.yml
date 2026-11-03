@@ -1,21 +1,27 @@
-name: CI
+name: Continuous Integration
 
 on:
+  pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
     paths-ignore:
       - '.github/workflows/**'
       - '**/*.md'
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   ci-prelude:
     name: Unit Tests + Docker Build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       registry:
         image: registry:2
@@ -24,27 +30,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
-      - name: Go test/lint + Docker build and push to local registry
+      - name: Go unit tests + Docker build and push to local registry
         id: ci
         uses: somaz94/go-docker-action-ci-action@v1
         with:
+          coverage_threshold: '90'
           manage_registry: 'false'
           test_command: |
             set -euo pipefail
             go mod tidy
-            # `git diff go.mod go.sum` fails two ways on a zero-dependency
-            # module, which every repo scaffolded from this template starts as:
-            # naming go.sum when it does not exist is a git FATAL (exit 128),
-            # not "no diff"; and `git diff` never sees an UNTRACKED file, so the
-            # go.sum that appears the moment a first dependency is added would
-            # slip through green. `git status --porcelain` answers both, and the
-            # `--` keeps a missing path a pathspec rather than a revision.
             if [ -n "$(git status --porcelain -- go.mod go.sum)" ]; then
               echo 'FAIL: go.mod or go.sum is not tidy'
-              git status --porcelain -- go.mod go.sum
               git diff -- go.mod go.sum || true
               exit 1
             fi
@@ -56,50 +53,187 @@ jobs:
             fi
             go test ./... -v -cover -coverprofile=coverage.out
 
-      - name: Run the Container (dry-run)
+      - name: Run the Container
+        env:
+          IMAGE_REF: ${{ steps.ci.outputs.image_ref }}
         run: |
-          docker run \
-            --env INPUT_OUTPUT_FILE="output.txt" \
-            --env INPUT_DRY_RUN="true" \
-            --rm "${{ steps.ci.outputs.image_ref }}"
+          set -euo pipefail
+          docker run --rm \
+            --volume "$PWD/testdata/clean:/work:ro" \
+            --env INPUT_PATH=/work \
+            "$IMAGE_REF"
 
-  test-action:
-    name: Action Integration Test
-    needs: ci-prelude
+  test-action-clean:
+    name: Test Clean Repository
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: ci-prelude
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
-      - name: Test Local Action (dry-run)
-        id: test-action
+      - name: Scan the gated fixture
+        id: scan
         uses: ./
         with:
-          output_file: output.txt
-          dry_run: 'true'
+          path: testdata/clean
 
       - name: Verify Output
+        env:
+          FINDINGS: ${{ steps.scan.outputs.findings }}
         run: |
-          if [ -z "${{ steps.test-action.outputs.output_file }}" ]; then
-            echo "FAIL: output_file output is empty"
+          set -euo pipefail
+          if [ "$FINDINGS" != "0" ]; then
+            echo "FAIL: expected no findings, got $FINDINGS"
             exit 1
           fi
-          echo "PASS: action outputs verified"
+          echo "PASS: gated agent produces no findings"
+
+  test-action-risky:
+    name: Test Risky Repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: ci-prelude
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Scan the risky fixture
+        id: scan
+        uses: ./
+        with:
+          path: testdata/risky
+          fail_on: none
+
+      - name: Verify Output
+        env:
+          HIGH: ${{ steps.scan.outputs.high }}
+          MEDIUM: ${{ steps.scan.outputs.medium }}
+          LOW: ${{ steps.scan.outputs.low }}
+        run: |
+          set -euo pipefail
+          if [ "$HIGH" != "5" ] || [ "$MEDIUM" != "3" ] || [ "$LOW" != "1" ]; then
+            echo "FAIL: got high=$HIGH medium=$MEDIUM low=$LOW"
+            exit 1
+          fi
+          echo "PASS: every severity reported"
+
+  test-action-fail-on:
+    name: Test Fail On Threshold
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: ci-prelude
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Scan with the default threshold
+        id: scan
+        continue-on-error: true
+        uses: ./
+        with:
+          path: testdata/risky
+
+      - name: Verify the step failed
+        env:
+          OUTCOME: ${{ steps.scan.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "FAIL: expected failure, got $OUTCOME"
+            exit 1
+          fi
+          echo "PASS: high findings fail the step"
+
+  test-action-ignore-rules:
+    name: Test Ignore Rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: ci-prelude
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Scan without the high rules
+        id: scan
+        uses: ./
+        with:
+          path: testdata/risky
+          ignore_rules: broad-tools,open-invocation,untrusted-checkout
+
+      - name: Verify Output
+        env:
+          HIGH: ${{ steps.scan.outputs.high }}
+          MEDIUM: ${{ steps.scan.outputs.medium }}
+        run: |
+          set -euo pipefail
+          if [ "$HIGH" != "0" ] || [ "$MEDIUM" != "3" ]; then
+            echo "FAIL: got high=$HIGH medium=$MEDIUM"
+            exit 1
+          fi
+          echo "PASS: ignored rules are gone and the rest stay"
+
+  test-action-sarif:
+    name: Test SARIF Output
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: ci-prelude
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Scan and write SARIF
+        id: scan
+        uses: ./
+        with:
+          path: testdata/risky
+          fail_on: none
+          sarif_file: results.sarif
+
+      - name: Verify SARIF
+        env:
+          SARIF_FILE: ${{ steps.scan.outputs.sarif_file }}
+        run: |
+          set -euo pipefail
+          test "$SARIF_FILE" = "results.sarif"
+          test "$(jq -r '.version' results.sarif)" = "2.1.0"
+          test "$(jq '.runs[0].results | length' results.sarif)" = "9"
+          echo "PASS: SARIF is valid and complete"
+
+  test-action-self:
+    name: Test Own Workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: ci-prelude
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Scan this repository
+        uses: ./
+        with:
+          fail_on: low
 
   ci-result:
     name: CI Result
     if: always()
     needs:
       - ci-prelude
-      - test-action
+      - test-action-clean
+      - test-action-risky
+      - test-action-fail-on
+      - test-action-ignore-rules
+      - test-action-sarif
+      - test-action-self
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Check all jobs
+        env:
+          HAS_FAILURE: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
         run: |
-          if [ "${{ contains(needs.*.result, 'failure') }}" = "true" ] || \
-             [ "${{ contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+          set -euo pipefail
+          if [ "$HAS_FAILURE" = "true" ]; then
             echo "[FAIL] Some jobs failed or were cancelled"
             exit 1
           fi

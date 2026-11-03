@@ -2,6 +2,7 @@ package output
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -75,5 +76,27 @@ func TestSetOutput_Fallback(t *testing.T) {
 	n, _ := r.Read(buf)
 	if got := string(buf[:n]); got != "key=value\n" {
 		t.Errorf("stdout = %q, want %q", got, "key=value\n")
+	}
+}
+
+func TestAppendSummary(t *testing.T) {
+	t.Setenv("GITHUB_STEP_SUMMARY", "")
+	if err := AppendSummary("x"); err != nil {
+		t.Errorf("no summary file: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "s.md")
+	t.Setenv("GITHUB_STEP_SUMMARY", path)
+	for _, part := range []string{"a", "b"} {
+		if err := AppendSummary(part); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(got), "ab") {
+		t.Errorf("summary = %q, %v", got, err)
+	}
+	t.Setenv("GITHUB_STEP_SUMMARY", filepath.Join(path, "nested", "s.md"))
+	if err := AppendSummary("x"); err == nil {
+		t.Error("expected an error for an unwritable path")
 	}
 }

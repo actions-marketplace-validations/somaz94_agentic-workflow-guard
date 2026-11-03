@@ -57,7 +57,7 @@ $(if [ "$HAS_TESTS" = true ]; then
     echo "- [x] \`${pkg}\` tests pass"
   done
 fi)
-- [ ] Docker build succeeds (\`docker build -t myaction:local .\`)
+- [ ] Docker build succeeds (\`docker build -t agentic-workflow-guard:local .\`)
 - [ ] Action dry-run passes
 EOF
 )

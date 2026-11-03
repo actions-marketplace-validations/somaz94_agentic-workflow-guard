@@ -1,3 +1,5 @@
-module github.com/YOUR_USERNAME/YOUR_ACTION
+module github.com/somaz94/agentic-workflow-guard
 
-go 1.26
+go 1.27
+
+require go.yaml.in/yaml/v3 v3.0.5

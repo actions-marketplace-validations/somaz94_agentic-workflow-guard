@@ -1,24 +1,38 @@
+// Package config loads the action inputs from INPUT_* environment variables.
 package config
 
 import (
+	"fmt"
 	"os"
 	"strings"
 )
 
-// Config holds the action configuration loaded from environment variables.
+// Config holds the action configuration.
 type Config struct {
-	InputFile  string
-	OutputFile string
-	DryRun     bool
+	Path        string
+	FailOn      string
+	SARIFFile   string
+	IgnoreRules []string
 }
 
-// Load reads configuration from INPUT_* environment variables.
-func Load() *Config {
-	return &Config{
-		InputFile:  getEnv("INPUT_INPUT_FILE", ""),
-		OutputFile: getEnv("INPUT_OUTPUT_FILE", "output.txt"),
-		DryRun:     strings.EqualFold(getEnv("INPUT_DRY_RUN", "false"), "true"),
+// Load reads and validates the inputs.
+func Load() (*Config, error) {
+	c := &Config{
+		Path:      getEnv("INPUT_PATH", "."),
+		FailOn:    strings.ToLower(getEnv("INPUT_FAIL_ON", "high")),
+		SARIFFile: os.Getenv("INPUT_SARIF_FILE"),
 	}
+	switch c.FailOn {
+	case "high", "medium", "low", "none":
+	default:
+		return nil, fmt.Errorf("fail_on must be high, medium, low or none, got %q", c.FailOn)
+	}
+	for _, r := range strings.Split(os.Getenv("INPUT_IGNORE_RULES"), ",") {
+		if r = strings.TrimSpace(r); r != "" {
+			c.IgnoreRules = append(c.IgnoreRules, r)
+		}
+	}
+	return c, nil
 }
 
 func getEnv(key, fallback string) string {

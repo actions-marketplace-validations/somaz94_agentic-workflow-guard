@@ -1,0 +1,9 @@
+# find-sensitive.sh allowlist, reviewed 2026-11-03.
+# enableAllProjectMcpServers is a real Claude Code settings key; `ProjectM` inside it trips the internal_marker pattern.
+# Format: <relative path><TAB><exact line text>. A new value in the same file is still reported.
+
+internal/audit/config.go	EnableAll bool `json:"enableAllProjectMcpServers"`
+internal/audit/config.go	out = add(out, "enableAllProjectMcpServers", "enableAllProjectMcpServers approves every MCP server the repository declares, including one added by a pull request.")
+internal/audit/config_test.go	{`{"enableAllProjectMcpServers": true}`, "medium agent-settings"},
+internal/audit/config_test.go	f, _ := ClaudeSettings(reg(t), "x", []byte("{\n  \"enableAllProjectMcpServers\": true\n}"))
+testdata/risky/.claude/settings.json	"enableAllProjectMcpServers": true

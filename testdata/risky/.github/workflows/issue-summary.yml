@@ -1,0 +1,15 @@
+name: Summarize issue
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+  models: read
+jobs:
+  summary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/ai-inference@v2
+        with:
+          prompt: 'Summarize: ${{ github.event.issue.title }}'

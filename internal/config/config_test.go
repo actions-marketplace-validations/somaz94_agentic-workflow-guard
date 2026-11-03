@@ -1,41 +1,40 @@
 package config
 
 import (
-	"os"
+	"reflect"
 	"testing"
 )
 
-func TestLoad_Defaults(t *testing.T) {
-	os.Clearenv()
-
-	cfg := Load()
-
-	if cfg.InputFile != "" {
-		t.Errorf("InputFile = %q, want empty", cfg.InputFile)
+func TestLoadDefaults(t *testing.T) {
+	for _, k := range []string{"INPUT_PATH", "INPUT_FAIL_ON", "INPUT_SARIF_FILE", "INPUT_IGNORE_RULES"} {
+		t.Setenv(k, "")
 	}
-	if cfg.OutputFile != "output.txt" {
-		t.Errorf("OutputFile = %q, want %q", cfg.OutputFile, "output.txt")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cfg.DryRun {
-		t.Error("DryRun = true, want false")
+	if c.Path != "." || c.FailOn != "high" || c.SARIFFile != "" || c.IgnoreRules != nil {
+		t.Errorf("defaults = %+v", c)
 	}
 }
 
-func TestLoad_FromEnv(t *testing.T) {
-	os.Clearenv()
-	t.Setenv("INPUT_INPUT_FILE", "data.json")
-	t.Setenv("INPUT_OUTPUT_FILE", "result.md")
-	t.Setenv("INPUT_DRY_RUN", "true")
-
-	cfg := Load()
-
-	if cfg.InputFile != "data.json" {
-		t.Errorf("InputFile = %q, want %q", cfg.InputFile, "data.json")
+func TestLoadValues(t *testing.T) {
+	t.Setenv("INPUT_PATH", "sub")
+	t.Setenv("INPUT_FAIL_ON", "MEDIUM")
+	t.Setenv("INPUT_SARIF_FILE", "out.sarif")
+	t.Setenv("INPUT_IGNORE_RULES", " a, ,b ")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cfg.OutputFile != "result.md" {
-		t.Errorf("OutputFile = %q, want %q", cfg.OutputFile, "result.md")
+	if c.Path != "sub" || c.FailOn != "medium" || c.SARIFFile != "out.sarif" || !reflect.DeepEqual(c.IgnoreRules, []string{"a", "b"}) {
+		t.Errorf("values = %+v", c)
 	}
-	if !cfg.DryRun {
-		t.Error("DryRun = false, want true")
+}
+
+func TestLoadRejectsBadFailOn(t *testing.T) {
+	t.Setenv("INPUT_FAIL_ON", "critical")
+	if _, err := Load(); err == nil {
+		t.Error("Load accepted an unknown fail_on")
 	}
 }

@@ -33,7 +33,7 @@ func SetOutput(name, value string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open GITHUB_OUTPUT: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if strings.Contains(value, "\n") {
 		delimiter := "EOF"
@@ -41,5 +41,21 @@ func SetOutput(name, value string) error {
 	} else {
 		_, err = fmt.Fprintf(f, "%s=%s\n", name, value)
 	}
+	return err
+}
+
+// AppendSummary adds Markdown to the job summary. Outside a runner there is no
+// summary file and nothing to do.
+func AppendSummary(markdown string) error {
+	path := os.Getenv("GITHUB_STEP_SUMMARY")
+	if path == "" {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open GITHUB_STEP_SUMMARY: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	_, err = f.WriteString(markdown)
 	return err
 }

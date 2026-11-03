@@ -1,29 +1,37 @@
+// Package action runs one scan from a loaded configuration.
 package action
 
 import (
 	"fmt"
+	"os"
 
-	"github.com/YOUR_USERNAME/YOUR_ACTION/internal/config"
+	"github.com/somaz94/agentic-workflow-guard/internal/audit"
+	"github.com/somaz94/agentic-workflow-guard/internal/config"
+	"github.com/somaz94/agentic-workflow-guard/internal/registry"
+	"github.com/somaz94/agentic-workflow-guard/internal/report"
 )
 
-// Result holds the output of the action.
-type Result struct {
-	Content string
-}
+// Version is stamped into the SARIF driver.
+var Version = "dev"
 
-// Run executes the main action logic.
-func Run(cfg *config.Config) (*Result, error) {
-	if cfg.InputFile != "" {
-		return processFile(cfg.InputFile)
+// Run scans the configured path and writes the SARIF file when one is asked for.
+func Run(cfg *config.Config) (*audit.Report, error) {
+	reg, err := registry.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load registry: %w", err)
 	}
-	return &Result{
-		Content: "Hello from my-action! Replace this with your logic.",
-	}, nil
-}
-
-func processFile(path string) (*Result, error) {
-	// TODO: Replace with actual file processing logic.
-	return &Result{
-		Content: fmt.Sprintf("Processed file: %s", path),
-	}, nil
+	rep, err := audit.Scan(reg, cfg.Path, cfg.IgnoreRules)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.SARIFFile != "" {
+		data, err := report.SARIF(rep, Version)
+		if err != nil {
+			return nil, fmt.Errorf("render sarif: %w", err)
+		}
+		if err := os.WriteFile(cfg.SARIFFile, data, 0o644); err != nil {
+			return nil, fmt.Errorf("write sarif: %w", err)
+		}
+	}
+	return rep, nil
 }

@@ -1,35 +1,46 @@
-name: My Action
-description: A brief description of what this action does
-author: YOUR_USERNAME
+name: Agentic Workflow Guard
+description: Audit GitHub Actions workflows that run AI agents for prompt-injection exposure
+author: somaz94
 
 branding:
-  icon: zap
+  icon: shield
   color: blue
 
 inputs:
-  input_file:
-    description: 'Input file path'
+  path:
+    description: 'Repository root to scan'
+    required: false
+    default: '.'
+  fail_on:
+    description: 'Fail the step on a finding at or above this severity: high, medium, low or none'
+    required: false
+    default: 'high'
+  sarif_file:
+    description: 'Write SARIF 2.1.0 to this path, for upload to code scanning. Empty writes nothing'
     required: false
     default: ''
-  output_file:
-    description: 'Output file path'
+  ignore_rules:
+    description: 'Comma-separated rule IDs to skip'
     required: false
-    default: 'output.txt'
-  dry_run:
-    description: 'Preview without writing to file'
-    required: false
-    default: 'false'
+    default: ''
 
 outputs:
-  result:
-    description: 'The result of the action'
-  output_file:
-    description: 'Path to the generated output file'
+  findings:
+    description: 'Total number of findings'
+  high:
+    description: 'Number of high-severity findings'
+  medium:
+    description: 'Number of medium-severity findings'
+  low:
+    description: 'Number of low-severity findings'
+  sarif_file:
+    description: 'Path of the SARIF file, empty when none was written'
 
 runs:
   using: docker
   image: Dockerfile
   env:
-    INPUT_INPUT_FILE: ${{ inputs.input_file }}
-    INPUT_OUTPUT_FILE: ${{ inputs.output_file }}
-    INPUT_DRY_RUN: ${{ inputs.dry_run }}
+    INPUT_PATH: ${{ inputs.path }}
+    INPUT_FAIL_ON: ${{ inputs.fail_on }}
+    INPUT_SARIF_FILE: ${{ inputs.sarif_file }}
+    INPUT_IGNORE_RULES: ${{ inputs.ignore_rules }}

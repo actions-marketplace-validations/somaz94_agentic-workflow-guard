@@ -1,39 +1,56 @@
 package action
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/YOUR_USERNAME/YOUR_ACTION/internal/config"
+	"github.com/somaz94/agentic-workflow-guard/internal/config"
 )
 
-func TestRun_Default(t *testing.T) {
-	cfg := &config.Config{
-		OutputFile: "output.txt",
+func repo(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, ".github", "workflows")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
 	}
+	src := "on: issues\njobs:\n  a:\n    steps:\n      - uses: anthropics/claude-code-action@v1\n        with:\n          allowed_non_write_users: '*'\n"
+	if err := os.WriteFile(filepath.Join(dir, "w.yml"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
 
-	result, err := Run(cfg)
+func TestRunWritesSARIF(t *testing.T) {
+	root := repo(t)
+	path := filepath.Join(t.TempDir(), "out.sarif")
+	r, err := Run(&config.Config{Path: root, SARIFFile: path})
 	if err != nil {
-		t.Fatalf("Run() error = %v", err)
+		t.Fatal(err)
 	}
-
-	if result.Content == "" {
-		t.Error("Run() returned empty content")
+	if len(r.Findings) != 1 {
+		t.Errorf("findings = %+v", r.Findings)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), `"ruleId": "open-invocation"`) {
+		t.Errorf("sarif = %s, %v", data, err)
 	}
 }
 
-func TestRun_WithInputFile(t *testing.T) {
-	cfg := &config.Config{
-		InputFile:  "test.json",
-		OutputFile: "output.txt",
+func TestRunWithoutSARIF(t *testing.T) {
+	if _, err := Run(&config.Config{Path: repo(t)}); err != nil {
+		t.Fatal(err)
 	}
+}
 
-	result, err := Run(cfg)
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
+func TestRunErrors(t *testing.T) {
+	if _, err := Run(&config.Config{Path: filepath.Join(t.TempDir(), "missing")}); err == nil {
+		t.Error("missing path accepted")
 	}
-
-	if !strings.Contains(result.Content, "test.json") {
-		t.Errorf("Run() content = %q, want to contain input file name", result.Content)
+	bad := filepath.Join(t.TempDir(), "no", "dir", "out.sarif")
+	if _, err := Run(&config.Config{Path: repo(t), SARIFFile: bad}); err == nil {
+		t.Error("unwritable sarif accepted")
 	}
 }

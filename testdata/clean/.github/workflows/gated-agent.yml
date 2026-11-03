@@ -1,0 +1,17 @@
+name: Gated agent
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+jobs:
+  agent:
+    if: >
+      contains(github.event.comment.body, '@claude') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_args: --allowedTools "Read,Grep,Bash(gh issue view:*)"
