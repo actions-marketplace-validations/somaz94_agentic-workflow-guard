@@ -79,7 +79,7 @@ This is static analysis, and a clean result is not a proof of safety.
 
 - Agents started from a `run:` step, and compiled GitHub Agentic Workflows, are not detected
 - A called reusable workflow is not followed into its file
-- Text that reaches an agent through another step's output or a prompt file is not traced
+- Text is traced one step back, through a step's output or a file it writes. Longer chains are not followed
 - `pull_request` and its review events are out of scope: a fork gets no secrets and a read-only token there
 
 <br/>

@@ -81,7 +81,9 @@ func TestEval(t *testing.T) {
 		{"bare github", "github == 'x'", ctx("issues"), Reachable},
 		{"bare event", "github.event", ctx("issues"), Reachable},
 		{"other github field", "github.ref == 'x'", ctx("issues"), Reachable},
-		{"repository payload", "github.event.repository.private == true", ctx("issues"), Reachable},
+		{"repository payload", "github.event.repository.fork == true", ctx("issues"), Reachable},
+		{"private branch never opens for an outsider", "github.event.repository.private == true", ctx("issues"), None},
+		{"private branch next to a gate", "github.event.repository.private == true || github.event.comment.author_association == 'OWNER'", ctx("issue_comment"), None},
 		{"unknown payload key", "github.event.foo == 'x'", ctx("issues"), Reachable},
 		{"base repo", "github.event.pull_request.base.repo.full_name == 'o/r'", ctx("pull_request_target"), Reachable},
 		{"workflow run conclusion", "github.event.workflow_run.conclusion == 'success'", ctx("workflow_run"), Reachable},
@@ -129,6 +131,17 @@ func TestEvalPriorContributor(t *testing.T) {
 	c.Actor = PriorContributor
 	if got := Eval(src, c); got != Reachable {
 		t.Errorf("prior contributor = %v; want Reachable", got)
+	}
+}
+
+func TestEvalIsGate(t *testing.T) {
+	c := ctx("issues")
+	c.IsGate = func(path []string) bool { return path[len(path)-1] == "authorized" }
+	if got := Eval("steps.a.outputs.authorized == 'true'", c); got != Indeterminate {
+		t.Errorf("gate output = %v; want Indeterminate", got)
+	}
+	if got := Eval("steps.a.outputs.outcome == 'true'", c); got != Reachable {
+		t.Errorf("flow output = %v; want Reachable", got)
 	}
 }
 

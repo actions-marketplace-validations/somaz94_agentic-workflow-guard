@@ -34,6 +34,7 @@ jobs:
         with:
           ref: main
       - name: not-a-scalar
+        id: the-id
         uses: o/a@v1
         if: always()
         with:
@@ -79,10 +80,10 @@ func TestParse(t *testing.T) {
 		t.Fatalf("steps = %d; want 2, the scalar step dropped", len(a.Steps))
 	}
 	s := a.Steps[1]
-	if s.Uses != "o/a@v1" || s.If != "always()" || s.Line != 29 || s.Env["S"].Value != "c" {
+	if s.ID != "the-id" || s.Name != "not-a-scalar" || s.Uses != "o/a@v1" || s.If != "always()" || s.Line != 29 || s.Env["S"].Value != "c" {
 		t.Errorf("step = %+v", s)
 	}
-	if s.With["plain"].Line != 34 || s.With["nested"].Value == "" {
+	if s.With["plain"].Line != 35 || s.With["nested"].Value == "" {
 		t.Errorf("with = %+v", s.With)
 	}
 	if w.JobByName("missing") != nil {

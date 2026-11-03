@@ -49,6 +49,9 @@ type Context struct {
 	Event   string
 	Actions []string
 	Actor   Actor
+	// IsGate reports whether a needs or steps output could enforce authorization.
+	// Others are ordinary flow control and gate nothing. Nil treats all as gates.
+	IsGate func(path []string) bool
 }
 
 // outsiderActions lists what an outsider can do per event. Labeling, assigning
@@ -488,7 +491,12 @@ func (e *evaluator) resolve(path []string) value {
 			return e.resolveEvent(path[2:])
 		}
 		return value{kind: kFree}
-	case "needs", "steps", "env":
+	case "needs", "steps":
+		if e.ctx.IsGate != nil && !e.ctx.IsGate(path) {
+			return value{kind: kFree}
+		}
+		return value{kind: kFree, uncertain: true}
+	case "env":
 		return value{kind: kFree, uncertain: true}
 	}
 	return value{kind: kFree}
@@ -540,7 +548,14 @@ func (e *evaluator) resolveEvent(rest []string) value {
 			return str("User")
 		}
 		return value{kind: kTaint}
-	case "repository", "organization":
+	case "repository":
+		// Outsiders only exist on a public repository, so a private-only branch
+		// never opens the door for them.
+		if len(rest) > 1 && rest[1] == "private" {
+			return boolean(false, true)
+		}
+		return value{kind: kFree}
+	case "organization":
 		return value{kind: kFree}
 	}
 	objects := payloadObjects[e.ctx.Event]

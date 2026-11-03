@@ -37,18 +37,22 @@ func (m Match) Matches(v string) bool { return m.re.MatchString(v) }
 
 // Agent describes one agent action.
 type Agent struct {
-	ID                string   `yaml:"id"`
-	Uses              []string `yaml:"uses"`
-	ActorCheck        bool     `yaml:"actor_check"`
-	PowerName         string   `yaml:"power"`
-	WildcardInputs    []string `yaml:"wildcard_inputs"`
-	BotWildcardInputs []string `yaml:"bot_wildcard_inputs"`
-	FullOutputInputs  []string `yaml:"full_output_inputs"`
-	ToolInputs        []string `yaml:"tool_inputs"`
-	SettingsInput     string   `yaml:"settings_input"`
-	LimitedWhen       []Match  `yaml:"limited_when"`
-	BroadWhen         []Match  `yaml:"broad_when"`
-	BroadWhenEnv      []Match  `yaml:"broad_when_env"`
+	ID                 string   `yaml:"id"`
+	Uses               []string `yaml:"uses"`
+	ActorCheck         bool     `yaml:"actor_check"`
+	PowerName          string   `yaml:"power"`
+	WildcardInputs     []string `yaml:"wildcard_inputs"`
+	BotWildcardInputs  []string `yaml:"bot_wildcard_inputs"`
+	FullOutputInputs   []string `yaml:"full_output_inputs"`
+	ToolInputs         []string `yaml:"tool_inputs"`
+	SettingsInput      string   `yaml:"settings_input"`
+	AllowlistInput     string   `yaml:"allowlist_input"`
+	AllowSettingsInput string   `yaml:"allow_settings_input"`
+	ReadOnlyTools      []string `yaml:"read_only_tools"`
+	LimitedWhen        []Match  `yaml:"limited_when"`
+	ScopedWhen         []Match  `yaml:"scoped_when"`
+	BroadWhen          []Match  `yaml:"broad_when"`
+	BroadWhenEnv       []Match  `yaml:"broad_when_env"`
 }
 
 // DefaultPower is the agent's capability before its inputs are read.
@@ -64,11 +68,13 @@ func (a *Agent) DefaultPower() Power {
 
 // Registry is the loaded catalog.
 type Registry struct {
-	Agents        []*Agent
-	Untrusted     *regexp.Regexp
-	ExecCommands  map[string]bool
-	Authorization *regexp.Regexp
-	Secret        *regexp.Regexp
+	Agents         []*Agent
+	Untrusted      *regexp.Regexp
+	ExecCommands   map[string]bool
+	Authorization  *regexp.Regexp
+	Secret         *regexp.Regexp
+	UntrustedFetch *regexp.Regexp
+	GateOutput     *regexp.Regexp
 }
 
 // Load parses the embedded catalog.
@@ -83,6 +89,8 @@ func parse(data []byte) (*Registry, error) {
 		Exec      []string `yaml:"exec_equivalent_commands"`
 		Authz     string   `yaml:"authorization_pattern"`
 		Secret    string   `yaml:"secret_pattern"`
+		Fetch     string   `yaml:"untrusted_fetch_pattern"`
+		Gate      string   `yaml:"gate_output_pattern"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parse registry: %w", err)
@@ -101,8 +109,14 @@ func parse(data []byte) (*Registry, error) {
 	if r.Secret, err = regexp.Compile(raw.Secret); err != nil {
 		return nil, fmt.Errorf("secret_pattern: %w", err)
 	}
+	if r.UntrustedFetch, err = regexp.Compile(raw.Fetch); err != nil {
+		return nil, fmt.Errorf("untrusted_fetch_pattern: %w", err)
+	}
+	if r.GateOutput, err = regexp.Compile(raw.Gate); err != nil {
+		return nil, fmt.Errorf("gate_output_pattern: %w", err)
+	}
 	for _, a := range r.Agents {
-		for _, set := range [][]Match{a.LimitedWhen, a.BroadWhen, a.BroadWhenEnv} {
+		for _, set := range [][]Match{a.LimitedWhen, a.ScopedWhen, a.BroadWhen, a.BroadWhenEnv} {
 			for i := range set {
 				re, err := regexp.Compile("(?i)" + set[i].Pattern)
 				if err != nil {

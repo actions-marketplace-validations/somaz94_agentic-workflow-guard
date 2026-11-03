@@ -70,6 +70,8 @@ func TestParseErrors(t *testing.T) {
 		"untrusted_contexts: ['(']",
 		"authorization_pattern: '('",
 		"secret_pattern: '('",
+		"untrusted_fetch_pattern: '('",
+		"gate_output_pattern: '('",
 		"agents: [{id: a, broad_when: [{input: b, pattern: '('}]}]",
 	}
 	for _, src := range cases {

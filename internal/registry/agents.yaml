@@ -3,6 +3,8 @@
 #
 # power is the default capability: limited, scoped or broad. A pattern is a
 # case-insensitive regular expression matched against an input's value.
+# read_only_tools lists the tools an allowlist can hold and still count as
+# limited: they read, or they post a comment, and none runs code or approves.
 agents:
   - id: claude
     uses: [anthropics/claude-code-action]
@@ -13,6 +15,20 @@ agents:
     bot_wildcard_inputs: [allowed_bots]
     full_output_inputs: [show_full_output]
     tool_inputs: [claude_args, settings]
+    allowlist_input: claude_args
+    allow_settings_input: settings
+    read_only_tools:
+      - Read
+      - Glob
+      - Grep
+      - LS
+      - mcp__github_inline_comment__create_inline_comment
+      - Bash(gh pr view:*)
+      - Bash(gh pr diff:*)
+      - Bash(gh pr checks:*)
+      - Bash(gh pr comment:*)
+      - Bash(gh issue view:*)
+      - Bash(gh issue comment:*)
     broad_when:
       - {input: claude_args, pattern: '--dangerously-skip-permissions|bypassPermissions'}
       - {input: settings, pattern: 'bypassPermissions'}
@@ -47,9 +63,11 @@ agents:
     actor_check: false
     # Without these inputs the model returns text and has no tools.
     power: limited
-    broad_when:
+    scoped_when:
       - {input: copilot-allow-tools, pattern: '.'}
       - {input: enable-github-mcp, pattern: '^true$'}
+    broad_when:
+      - {input: copilot-allow-tools, pattern: '^(\*|all|true)$|shell\(\*\)'}
 
 # Payload fields written by whoever triggered the run. The object name decides
 # which events can carry the field.
@@ -60,6 +78,14 @@ untrusted_contexts:
   - github\.event\.pull_request\.(title|body|head\.ref|head\.label)
   - github\.event\.workflow_run\.(head_branch|head_commit\.message)
   - github\.head_ref
+
+# A prior step matching this pulls attacker-written text in, so an agent reading
+# that step's output or the file it writes is reading the text too.
+untrusted_fetch_pattern: 'github\.event\.(issue|comment|discussion|pull_request)\.(title|body)|github\.event_path|GITHUB_EVENT_PATH|context\.payload\.(issue|comment|discussion|pull_request)|gh (issue|pr) (view|diff)|issues\.get\(|pulls\.get\('
+
+# A needs or steps output named like this can carry an authorization result. Any
+# other output is flow control, and treating it as a gate would hide a finding.
+gate_output_pattern: '(?i)author|allow|trust|permission|member|collab|admin|maintainer|owner|fork|internal|gate|command|proceed|should|ok$'
 
 # A Bash permission on one of these commands runs arbitrary programs, however
 # narrow it reads: `find -exec`, `xargs`, `env`, an interpreter, a build tool.

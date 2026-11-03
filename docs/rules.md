@@ -16,7 +16,7 @@ Severity combines how far the actor gets with what the agent can do once they ge
 
 | Agent power | Meaning | Examples |
 |---|---|---|
-| Limited | Returns text or runs read-only | A model call with no tools, a read-only sandbox |
+| Limited | Returns text, reads, or posts a comment | A model call with no tools, a read-only sandbox, an allowlist of only read and comment tools |
 | Scoped | Tools behind an allowlist or approval | The default for most agents |
 | Broad | Can run arbitrary commands | Auto-approval, a full-access sandbox, `Bash(find:*)` |
 
@@ -34,7 +34,7 @@ An outsider can start the agent, either because its actor allowlist is `*` or be
 
 ## untrusted-input
 
-A field such as `github.event.issue.body` reaches the agent through `with:` or `env:`. Moving the text into an environment variable does not help here, because the model reads the content either way.
+A field such as `github.event.issue.body` reaches the agent through `with:` or `env:`, or one step back through a step's output or a file it writes. Moving the text into an environment variable does not help here, because the model reads the content either way.
 
 **Fix**: gate the workflow to trusted actors. If it must serve outsiders, give the agent no tools that can act, and treat its output as untrusted too.
 

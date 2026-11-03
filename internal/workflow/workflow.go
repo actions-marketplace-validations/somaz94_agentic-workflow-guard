@@ -24,6 +24,8 @@ type Input struct {
 
 // Step is one job step.
 type Step struct {
+	ID   string
+	Name string
 	Uses string
 	Run  string
 	If   string
@@ -110,6 +112,8 @@ func job(key, n *yaml.Node) *Job {
 			continue
 		}
 		j.Steps = append(j.Steps, Step{
+			ID:   scalar(get(s, "id")),
+			Name: scalar(get(s, "name")),
 			Uses: scalar(get(s, "uses")),
 			Run:  scalar(get(s, "run")),
 			If:   scalar(get(s, "if")),
