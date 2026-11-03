@@ -1,0 +1,29 @@
+# Binary
+myaction
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Coverage
+*.out
+coverage.html
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

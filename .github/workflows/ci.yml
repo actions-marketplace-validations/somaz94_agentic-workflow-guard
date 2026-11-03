@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/workflows/**'
+      - '**/*.md'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci-prelude:
+    name: Unit Tests + Docker Build
+    runs-on: ubuntu-latest
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5001:5000
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Go test/lint + Docker build and push to local registry
+        id: ci
+        uses: somaz94/go-docker-action-ci-action@v1
+        with:
+          manage_registry: 'false'
+          test_command: |
+            set -euo pipefail
+            go mod tidy
+            # `git diff go.mod go.sum` fails two ways on a zero-dependency
+            # module, which every repo scaffolded from this template starts as:
+            # naming go.sum when it does not exist is a git FATAL (exit 128),
+            # not "no diff"; and `git diff` never sees an UNTRACKED file, so the
+            # go.sum that appears the moment a first dependency is added would
+            # slip through green. `git status --porcelain` answers both, and the
+            # `--` keeps a missing path a pathspec rather than a revision.
+            if [ -n "$(git status --porcelain -- go.mod go.sum)" ]; then
+              echo 'FAIL: go.mod or go.sum is not tidy'
+              git status --porcelain -- go.mod go.sum
+              git diff -- go.mod go.sum || true
+              exit 1
+            fi
+            go vet ./...
+            if [ -n "$(gofmt -l .)" ]; then
+              echo 'Code is not formatted. Run gofmt -s -w .'
+              gofmt -d .
+              exit 1
+            fi
+            go test ./... -v -cover -coverprofile=coverage.out
+
+      - name: Run the Container (dry-run)
+        run: |
+          docker run \
+            --env INPUT_OUTPUT_FILE="output.txt" \
+            --env INPUT_DRY_RUN="true" \
+            --rm "${{ steps.ci.outputs.image_ref }}"
+
+  test-action:
+    name: Action Integration Test
+    needs: ci-prelude
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Test Local Action (dry-run)
+        id: test-action
+        uses: ./
+        with:
+          output_file: output.txt
+          dry_run: 'true'
+
+      - name: Verify Output
+        run: |
+          if [ -z "${{ steps.test-action.outputs.output_file }}" ]; then
+            echo "FAIL: output_file output is empty"
+            exit 1
+          fi
+          echo "PASS: action outputs verified"
+
+  ci-result:
+    name: CI Result
+    if: always()
+    needs:
+      - ci-prelude
+      - test-action
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all jobs
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') }}" = "true" ] || \
+             [ "${{ contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "[FAIL] Some jobs failed or were cancelled"
+            exit 1
+          fi
+          echo "[PASS] All CI jobs passed"

@@ -1,0 +1,9 @@
+.git
+.github
+.gitignore
+.gitattributes
+*.md
+LICENSE
+Makefile
+coverage.out
+coverage.html
