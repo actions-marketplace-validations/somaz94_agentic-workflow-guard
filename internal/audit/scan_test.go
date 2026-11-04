@@ -35,8 +35,8 @@ func TestScan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Files != 5 {
-		t.Errorf("files = %d; want 5", r.Files)
+	if r.Files != 3 {
+		t.Errorf("files = %d; want 3", r.Files)
 	}
 	if len(r.Warnings) != 2 {
 		t.Errorf("warnings = %v; want the broken workflow and settings", r.Warnings)
@@ -159,15 +159,65 @@ func TestScanRefusesSymlinkOutOfTree(t *testing.T) {
 	}
 }
 
-func TestScanSkipsCompiledWorkflows(t *testing.T) {
+func TestScanSkipsOnlyCompiledWorkflows(t *testing.T) {
+	const src = "on: issues\npermissions: {}\njobs:\n  a:\n    steps:\n      - uses: openai/codex-action@v1\n        with:\n          allow-users: '*'\n"
 	root := t.TempDir()
-	write(t, root, ".github/workflows/x.lock.yml", "on: issues\njobs:\n  a:\n    steps:\n      - uses: openai/codex-action@v1\n        with:\n          allow-users: '*'\n")
+	write(t, root, ".github/workflows/x.lock.yml", src)
 	r, err := Scan(reg(t), root, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if r.Files != 1 || len(r.Findings) != 1 {
+		t.Errorf("without its source: %+v", r)
+	}
+	write(t, root, ".github/workflows/x.md", "# source\n")
+	if r, err = Scan(reg(t), root, nil); err != nil {
+		t.Fatal(err)
+	}
 	if r.Files != 0 || len(r.Findings) != 0 {
+		t.Errorf("with its source: %+v", r)
+	}
+}
+
+func TestScanCountsOnlyWhatItAudited(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, ".github/workflows/bad.yml", "a: [\n")
+	write(t, root, ".mcp.json", "{")
+	r, err := Scan(reg(t), root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Files != 0 || len(r.Warnings) != 2 {
 		t.Errorf("report = %+v", r)
+	}
+}
+
+func TestScanCallBudgetIsPerWorkflow(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, ".github/workflows/called.yml", "on: workflow_call\njobs:\n  r:\n    steps:\n      - run: echo\n")
+	var b strings.Builder
+	b.WriteString("on: issues\njobs:\n")
+	for j := 0; j < maxCalls/2; j++ {
+		fmt.Fprintf(&b, "  j%d:\n    uses: ./.github/workflows/called.yml\n", j)
+	}
+	for w := 0; w < 3; w++ {
+		write(t, root, fmt.Sprintf(".github/workflows/w%d.yml", w), b.String())
+	}
+	if _, err := Scan(reg(t), root, nil); err != nil {
+		t.Errorf("ordinary repetition failed the scan: %v", err)
+	}
+}
+
+func TestScanDoesNotFollowCallsOnRunsNoOutsiderStarts(t *testing.T) {
+	root := t.TempDir()
+	var b strings.Builder
+	b.WriteString("on: push\njobs:\n")
+	for j := 0; j < maxCalls+5; j++ {
+		fmt.Fprintf(&b, "  j%d:\n    uses: ./.github/workflows/none.yml\n", j)
+	}
+	write(t, root, ".github/workflows/w.yml", b.String())
+	if _, err := Scan(reg(t), root, nil); err != nil {
+		t.Errorf("err = %v", err)
 	}
 }
 
@@ -175,13 +225,15 @@ func TestScanSkipsCompiledWorkflows(t *testing.T) {
 // run as whole scans and must come back with an error rather than a clean report.
 func TestScanRefusesHostileTrees(t *testing.T) {
 	bomb := func(root string) {
-		var b strings.Builder
-		b.WriteString("runs:\n  using: composite\n  steps:\n")
-		for i := 0; i < 20; i++ {
-			b.WriteString("    - uses: ./x\n")
+		for level := 0; level < 8; level++ {
+			var b strings.Builder
+			b.WriteString("runs:\n  using: composite\n  steps:\n")
+			for i := 0; i < 20; i++ {
+				fmt.Fprintf(&b, "    - uses: ./a%d\n", level+1)
+			}
+			write(t, root, fmt.Sprintf("a%d/action.yml", level), b.String())
 		}
-		write(t, root, "x/action.yml", b.String())
-		write(t, root, ".github/workflows/w.yml", "on: issues\njobs:\n  a:\n    steps:\n      - uses: ./x\n")
+		write(t, root, ".github/workflows/w.yml", "on: issues\njobs:\n  a:\n    steps:\n      - uses: ./a0\n")
 	}
 	fanout := func(root string) {
 		write(t, root, ".github/workflows/w.yml", "on: issues\njobs:\n  a:\n    uses: ./.github/workflows/w0.yml\n")
@@ -199,6 +251,14 @@ func TestScanRefusesHostileTrees(t *testing.T) {
 		b.WriteString("x: &big {a: \"" + strings.Repeat("a", 500_000) + "\"}\nenv:\n")
 		for i := 0; i < 50; i++ {
 			fmt.Fprintf(&b, "  k%d: *big\n", i)
+		}
+		write(t, root, ".github/workflows/w.yml", b.String())
+	}
+	emptyAliases := func(root string) {
+		var b strings.Builder
+		b.WriteString("x: &s [" + strings.Repeat("'',", 170_000) + "]\nenv:\n")
+		for i := 0; i < 1000; i++ {
+			fmt.Fprintf(&b, "  k%d: *s\n", i)
 		}
 		write(t, root, ".github/workflows/w.yml", b.String())
 	}
@@ -220,7 +280,7 @@ func TestScanRefusesHostileTrees(t *testing.T) {
 		write(t, root, ".github/workflows/w.yml", "on: issues\njobs:\n  a:\n    steps:\n      - uses: ./act\n")
 	}
 	for name, build := range map[string]func(string){
-		"composite fan-out": bomb, "reusable fan-out": fanout, "alias expansion": aliases,
+		"composite fan-out": bomb, "reusable fan-out": fanout, "alias expansion": aliases, "alias expansion of empty strings": emptyAliases,
 		"oversized file": large, "alias expansion in a called workflow": calledAliases, "alias expansion in an action": actionAliases,
 	} {
 		t.Run(name, func(t *testing.T) {

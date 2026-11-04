@@ -50,12 +50,16 @@ func TestFindRun(t *testing.T) {
 		"cat d | codex --ask-for-approval never exec \\\n  -": "codex-cli",
 		`copilot -p "$(cat p.md)"`:                            "copilot-cli",
 		"opencode run x":                                      "opencode-cli",
+		"$HOME/.local/bin/claude -p x":                        "claude-cli",
+		"./claude -p x":                                       "claude-cli",
+		`bash -c "claude -p x"`:                               "claude-cli",
+		"sh -lc 'codex exec x'":                               "codex-cli",
 		"aider --model m --message x":                         "aider-cli",
 	}
 	for script, id := range cases {
-		a := r.FindRun(script)
-		if a == nil || a.ID != id {
-			t.Errorf("FindRun(%q) = %+v; want %s", script, a, id)
+		a := r.FindRuns(script)
+		if len(a) != 1 || a[0].ID != id {
+			t.Errorf("FindRuns(%q) = %+v; want %s", script, a, id)
 		}
 	}
 	for _, script := range []string{
@@ -69,9 +73,47 @@ func TestFindRun(t *testing.T) {
 		"aider --version",
 		"./claude-wrapper -p x",
 	} {
-		if a := r.FindRun(script); a != nil {
-			t.Errorf("FindRun(%q) = %s; want none", script, a.ID)
+		if a := r.FindRuns(script); a != nil {
+			t.Errorf("FindRuns(%q) = %v; want none", script, a)
 		}
+	}
+}
+
+func TestFindRunsReturnsEveryAgent(t *testing.T) {
+	r, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := r.FindRuns("codex exec x\nopencode run y\n")
+	if len(got) != 2 {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestNarrowedBy(t *testing.T) {
+	r, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var open *Agent
+	for _, a := range r.Agents {
+		if a.ID == "opencode-cli" {
+			open = a
+		}
+	}
+	for src, want := range map[string]bool{
+		`{}`:                                    false,
+		`{"permission": {"bash": "allow"}}`:     false,
+		`{"permission": {"bash": "deny"}}`:      true,
+		`{"permission": "ask"}`:                 true,
+		`{"bash": {"*": "deny", "gh *": "ok"}}`: true,
+	} {
+		if got := open.NarrowedBy([]byte(src)); got != want {
+			t.Errorf("NarrowedBy(%s) = %v", src, got)
+		}
+	}
+	if (&Agent{}).NarrowedBy([]byte(`{}`)) {
+		t.Error("an agent with no pattern is never narrowed")
 	}
 }
 
@@ -97,6 +139,8 @@ func TestUntrustedPattern(t *testing.T) {
 		"github.event.comment.body",
 		"github.event.pull_request.body",
 		"github.event.workflow_run.display_title",
+		"github.event.workflow_run.head_commit.committer.name",
+		"github.event.pull_request.head.repo.description",
 		"github.head_ref",
 	} {
 		if !r.Untrusted.MatchString(s) {
@@ -126,6 +170,7 @@ func TestParseErrors(t *testing.T) {
 		"scalar_output_pattern: '('",
 		"agents: [{id: a, broad_when: [{input: b, pattern: '('}]}]",
 		"agents: [{id: a, run_pattern: '('}]",
+		"agents: [{id: a, config_pattern: '('}]",
 	}
 	for _, src := range cases {
 		if _, err := parse([]byte(src)); err == nil {

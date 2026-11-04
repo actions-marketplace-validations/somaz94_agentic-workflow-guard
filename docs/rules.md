@@ -22,7 +22,7 @@ Severity combines how far the actor gets with what the agent can do once they ge
 
 A command-line agent in a `run:` step gets the power its tool has when run unattended, read from its flags and settings. It has no actor check of its own, so only a gate on the job or step protects it.
 
-When the only gate is a run-time one that the file cannot prove, such as a job output or an authorization step, the severity drops one level and the message asks you to verify it.
+When the only gate is a run-time one that the file cannot prove, such as a job output, an authorization step or a required pull request label, the severity drops one level and the message asks you to verify it. A label counts here because it stays on the pull request: a maintainer adds it once, and the author's next push runs with it in place.
 
 <br/>
 
@@ -47,6 +47,8 @@ A test on the text is not a flow: `contains(github.event.issue.body, 'bug') && '
 ## untrusted-checkout
 
 The agent runs after the job checks out the pull request's code on a trigger that holds secrets. The checkout brings the attacker's agent config, hooks and instructions with it.
+
+A ref that is only a branch name, such as `github.head_ref`, is reported one level lower. It normally resolves in this repository, where an outsider cannot push, but `actions/checkout` treats a name spelled like `refs/pull/1/head` as a pull request.
 
 **Fix**: check out the base revision and have the agent read the diff.
 

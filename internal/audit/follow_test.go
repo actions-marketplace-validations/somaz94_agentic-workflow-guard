@@ -2,6 +2,7 @@ package audit
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"reflect"
 	"sort"
@@ -169,14 +170,74 @@ func TestCompositeWholeInputs(t *testing.T) {
 	}
 }
 
-func TestFollowDepthLimit(t *testing.T) {
-	files := map[string]string{mainWF: "on: issue_comment\njobs:\n  a:\n    uses: ./.github/workflows/w0.yml\n"}
-	name := func(i int) string { return ".github/workflows/w" + string(rune('0'+i)) + ".yml" }
+func TestFollowDepthLimitIsNotSilent(t *testing.T) {
+	name := func(i int) string { return fmt.Sprintf(".github/workflows/w%d.yml", i) }
+	files := map[string]string{mainWF: "on: issue_comment\njobs:\n  a:\n    uses: ./" + name(0) + "\n"}
 	for i := 0; i < maxDepth+2; i++ {
 		files[name(i)] = "on: workflow_call\njobs:\n  n:\n    uses: ./" + name(i+1) + "\n"
 	}
-	if got, _ := follow(t, files, mainWF); len(got) != 0 {
-		t.Errorf("got %v", got)
+	src := func(rel string) ([]byte, error) {
+		if s, ok := files[rel]; ok {
+			return []byte(s), nil
+		}
+		return nil, fs.ErrNotExist
+	}
+	wf, _ := workflow.Parse([]byte(files[mainWF]))
+	a := newAuditor(reg(t), src, mainWF, wf, nil, func(string) {})
+	a.run()
+	if !strings.Contains(a.budget.reason, "deep") {
+		t.Errorf("reason = %q", a.budget.reason)
+	}
+}
+
+func TestCompositeDepthLimitIsNotSilent(t *testing.T) {
+	files := map[string]string{mainWF: "on: issues\njobs:\n  a:\n    steps:\n      - uses: ./c0\n"}
+	for i := 0; i < maxDepth+2; i++ {
+		files[fmt.Sprintf("c%d/action.yml", i)] = fmt.Sprintf("runs:\n  using: composite\n  steps:\n    - uses: ./c%d\n", i+1)
+	}
+	src := func(rel string) ([]byte, error) {
+		if s, ok := files[rel]; ok {
+			return []byte(s), nil
+		}
+		return nil, fs.ErrNotExist
+	}
+	wf, _ := workflow.Parse([]byte(files[mainWF]))
+	a := newAuditor(reg(t), src, mainWF, wf, nil, func(string) {})
+	a.run()
+	if !strings.Contains(a.budget.reason, "deep") {
+		t.Errorf("reason = %q", a.budget.reason)
+	}
+}
+
+func TestDepthGitHubAllowsIsFollowed(t *testing.T) {
+	files := map[string]string{mainWF: "on: issue_comment\npermissions: {}\njobs:\n  a:\n    steps:\n      - uses: ./c0\n"}
+	for i := 0; i < 8; i++ {
+		files[fmt.Sprintf("c%d/action.yml", i)] = fmt.Sprintf("runs:\n  using: composite\n  steps:\n    - uses: ./c%d\n", i+1)
+	}
+	files["c8/action.yml"] = "runs:\n  using: composite\n  steps:\n    - uses: openai/codex-action@v1\n      with:\n        allow-users: '*'\n"
+	got, _ := follow(t, files, mainWF)
+	if len(got) != 1 {
+		t.Errorf("findings = %+v", got)
+	}
+}
+
+func TestCalledOutputCarriesWhatItsStepsRead(t *testing.T) {
+	const caller = "on: issues\npermissions: {}\njobs:\n  c:\n    uses: ./.github/workflows/agent.yml\n  a:\n    needs: c\n    steps:\n      - uses: actions/ai-inference@v2\n        with:\n          prompt: ${{ needs.c.outputs.t }}\n"
+	got, _ := follow(t, map[string]string{mainWF: caller, agentWF: "on: workflow_call\njobs:\n  r:\n    steps:\n      - run: gh issue view 1\n"}, mainWF)
+	if s := summarize(got); !reflect.DeepEqual(s, []string{"low untrusted-input " + mainWF}) {
+		t.Errorf("tainted: %v", s)
+	}
+	got, _ = follow(t, map[string]string{mainWF: caller, agentWF: "on: workflow_call\njobs:\n  r:\n    steps:\n      - run: echo\n"}, mainWF)
+	if len(got) != 0 {
+		t.Errorf("clean: %+v", got)
+	}
+	got, _ = follow(t, map[string]string{mainWF: strings.Replace(caller, "${{ needs.c.outputs.t }}", "${{ toJSON(needs.c.outputs) }}", 1), agentWF: "on: workflow_call\njobs:\n  r:\n    steps:\n      - run: gh issue view 1\n"}, mainWF)
+	if len(got) != 1 {
+		t.Errorf("whole outputs: %+v", got)
+	}
+	got, _ = follow(t, map[string]string{mainWF: strings.Replace(caller, "./.github/workflows/agent.yml", "o/r/.github/workflows/a.yml@v1", 1)}, mainWF)
+	if len(got) != 0 {
+		t.Errorf("another repository: %+v", got)
 	}
 }
 
@@ -306,6 +367,21 @@ func TestCompositeNestedInputAndYamlName(t *testing.T) {
 	}
 }
 
+func TestCompositeReadErrorWarns(t *testing.T) {
+	src := func(rel string) ([]byte, error) {
+		if rel == "act/action.yml" {
+			return nil, errors.New("refused")
+		}
+		return nil, fs.ErrNotExist
+	}
+	wf, _ := workflow.Parse([]byte("on: issues\njobs:\n  a:\n    steps:\n      - uses: ./act\n"))
+	var got []string
+	newAuditor(reg(t), src, mainWF, wf, nil, func(m string) { got = append(got, m) }).run()
+	if len(got) != 1 || !strings.Contains(got[0], "refused") {
+		t.Errorf("warnings = %v", got)
+	}
+}
+
 func TestCompositeRecursionAndBadFile(t *testing.T) {
 	got, w := follow(t, map[string]string{
 		mainWF:            "on: issues\njobs:\n  a:\n    steps:\n      - uses: ./loop\n      - uses: ./bad\n",
@@ -326,12 +402,16 @@ func TestCommittedConfigNarrowsAWideDefault(t *testing.T) {
 	if s := summarize(got); len(s) != 2 {
 		t.Errorf("without a config: %v", s)
 	}
-	got, _ = follow(t, map[string]string{mainWF: wf, "opencode.json": "{}"}, mainWF)
+	got, _ = follow(t, map[string]string{mainWF: wf, "opencode.json": `{"permission": {"bash": "deny"}}`}, mainWF)
 	if s := summarize(got); !reflect.DeepEqual(s, []string{"medium open-invocation " + mainWF}) {
 		t.Errorf("with a config: %v", s)
 	}
+	got, _ = follow(t, map[string]string{mainWF: wf, "opencode.json": `{"permission": {"bash": "allow"}}`}, mainWF)
+	if s := summarize(got); len(s) != 2 {
+		t.Errorf("a config that allows everything narrows nothing: %v", s)
+	}
 	const auto = "on: issues\npermissions: {}\njobs:\n  a:\n    steps:\n      - run: opencode run --auto triage\n"
-	got, _ = follow(t, map[string]string{mainWF: auto, "opencode.json": "{}"}, mainWF)
+	got, _ = follow(t, map[string]string{mainWF: auto, "opencode.json": `{"permission": {"bash": "deny"}}`}, mainWF)
 	if s := summarize(got); len(s) != 2 {
 		t.Errorf("auto mode overrides a config: %v", s)
 	}

@@ -38,6 +38,7 @@ func run(w io.Writer) error {
 		{"high", strconv.Itoa(rep.Count(audit.High))},
 		{"medium", strconv.Itoa(rep.Count(audit.Medium))},
 		{"low", strconv.Itoa(rep.Count(audit.Low))},
+		{"warnings", strconv.Itoa(len(rep.Warnings))},
 		{"sarif_file", cfg.SARIFFile},
 	}
 	for _, o := range outputs {

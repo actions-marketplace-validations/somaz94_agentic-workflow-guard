@@ -21,19 +21,20 @@
 | `high` | Number of high-severity findings |
 | `medium` | Number of medium-severity findings |
 | `low` | Number of low-severity findings |
+| `warnings` | Number of files that could not be audited |
 | `sarif_file` | Path of the SARIF file, empty when none was written |
 
 <br/>
 
 ## What gets scanned
 
-Files directly under `.github/workflows/` with a `.yml` or `.yaml` extension, except a compiled `.lock.yml`, plus these agent configs when present: `.claude/settings.json`, `.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json` and `.gemini/settings.json`.
+Files directly under `.github/workflows/` with a `.yml` or `.yaml` extension, except a `.lock.yml` next to the `.md` it was compiled from, plus these agent configs when present: `.claude/settings.json`, `.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json` and `.gemini/settings.json`.
 
 A reusable workflow or composite action referenced with `./` is read too, and a finding inside one is reported at that file and names its caller. References to another repository are not followed, because that would need the network.
 
-A file that cannot be parsed becomes a warning and the scan continues. A symlink pointing outside `path` is not read.
+A file that cannot be parsed becomes a warning, is listed in the job summary and is left out of the count of scanned files, and the scan continues. A symlink pointing outside `path` is not read.
 
-The tree may come from a fork, so a scan has limits on file size, YAML alias expansion, followed calls, steps per job and time. No ordinary repository reaches them. Reaching one fails the step whatever `fail_on` says, because a partial scan must not read as a clean one.
+The tree may come from a fork, so a scan has limits on file size, YAML alias expansion, call depth, followed calls, steps per job and time. No ordinary repository reaches them. Reaching one fails the step whatever `fail_on` says, because a partial scan must not read as a clean one.
 
 <br/>
 

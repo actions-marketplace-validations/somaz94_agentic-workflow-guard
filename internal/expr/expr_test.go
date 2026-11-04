@@ -85,6 +85,19 @@ func TestParseErrors(t *testing.T) {
 	}
 }
 
+func TestNumberForms(t *testing.T) {
+	for _, src := range []string{"0x1F", "1E3", "1e3", "1.5", "-2"} {
+		if _, err := Parse(src); err != nil {
+			t.Errorf("Parse(%q): %v", src, err)
+		}
+	}
+	for _, src := range []string{"1.2.3", "0xZ", "1a"} {
+		if _, err := Parse(src); err == nil {
+			t.Errorf("Parse(%q) succeeded", src)
+		}
+	}
+}
+
 func TestFlows(t *testing.T) {
 	cases := map[string][]string{
 		"a.b":                     {"a.b"},

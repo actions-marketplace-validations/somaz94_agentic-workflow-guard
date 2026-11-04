@@ -62,6 +62,8 @@ type Agent struct {
 	LimitedWhenEnv     []Match  `yaml:"limited_when_env"`
 	LimitingDeny       []string `yaml:"limiting_deny"`
 	ConfigFiles        []string `yaml:"config_files"`
+	ConfigPattern      string   `yaml:"config_pattern"`
+	config             *regexp.Regexp
 }
 
 // DefaultPower is the agent's capability before its inputs are read.
@@ -136,6 +138,11 @@ func parse(data []byte) (*Registry, error) {
 				return nil, fmt.Errorf("agent %s run_pattern: %w", a.ID, err)
 			}
 		}
+		if a.ConfigPattern != "" {
+			if a.config, err = regexp.Compile(a.ConfigPattern); err != nil {
+				return nil, fmt.Errorf("agent %s config_pattern: %w", a.ID, err)
+			}
+		}
 		for _, set := range [][]Match{a.LimitedWhen, a.ScopedWhen, a.BroadWhen, a.BroadWhenEnv, a.ScopedWhenEnv, a.LimitedWhenEnv} {
 			for i := range set {
 				re, err := regexp.Compile("(?i)" + set[i].Pattern)
@@ -152,14 +159,20 @@ func parse(data []byte) (*Registry, error) {
 // commandStart anchors a run_pattern where a shell starts a command, so a mention
 // in an `echo` or a prompt is not an agent. It also skips the wrappers people put
 // in front of one.
-const commandStart = `(?im)(?:^|[|;&(]|\b(?:if|then|else|do|while|until)\s|!\s)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:timeout|time|exec|nohup|sudo|env)\s+(?:-\S+\s+)*(?:\d+[smh]?\s+)?)*`
+const commandStart = `(?im)(?:^|[|;&(]|\b(?:if|then|else|do|while|until)\s|!\s)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:timeout|time|exec|nohup|sudo|env)\s+(?:-\S+\s+)*(?:\d+[smh]?\s+)?)*(?:(?:ba|z)?sh\s+-\w*c\s+["']?)?(?:[\w$.{}~/-]*/)?`
 
 // shellNoise holds what would hide a command or fake one: comments and the
 // backslash that continues it on the next line.
 var shellNoise = strings.NewReplacer("\\\n", " ")
 
-// FindRun returns the agent a `run:` script starts, nil when none.
-func (r *Registry) FindRun(script string) *Agent {
+// NarrowedBy reports whether a committed config restricts what the agent can run.
+func (a *Agent) NarrowedBy(data []byte) bool {
+	return a.config != nil && a.config.Match(data)
+}
+
+// FindRuns returns every agent a `run:` script starts. One script can start several
+// with different powers, and the worst of them decides.
+func (r *Registry) FindRuns(script string) []*Agent {
 	if script == "" {
 		return nil
 	}
@@ -170,12 +183,13 @@ func (r *Registry) FindRun(script string) *Agent {
 		}
 	}
 	text := strings.Join(kept, "\n")
+	var out []*Agent
 	for _, a := range r.Agents {
 		if a.run != nil && a.run.MatchString(text) {
-			return a
+			out = append(out, a)
 		}
 	}
-	return nil
+	return out
 }
 
 // Find returns the agent behind a `uses:` value, ignoring its ref and subpath.

@@ -172,10 +172,10 @@ func lex(s string) ([]token, error) {
 			i = j + 1
 		case c >= '0' && c <= '9' || c == '-' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9':
 			j := i + 1
-			for j < len(s) && (s[j] >= '0' && s[j] <= '9' || s[j] == '.' || s[j] == 'x' || s[j] == 'e') {
+			for j < len(s) && (s[j] >= '0' && s[j] <= '9' || s[j] >= 'a' && s[j] <= 'f' || s[j] >= 'A' && s[j] <= 'F' || s[j] == '.' || s[j] == 'x' || s[j] == 'X') {
 				j++
 			}
-			if _, err := strconv.ParseFloat(s[i:j], 64); err != nil {
+			if !validNumber(s[i:j]) {
 				return nil, fmt.Errorf("bad number %q at offset %d", s[i:j], i)
 			}
 			out = append(out, token{tokNumber, s[i:j], i})
@@ -204,6 +204,15 @@ func lex(s string) ([]token, error) {
 		}
 	}
 	return append(out, token{tokEOF, "", len(s)}), nil
+}
+
+// validNumber accepts what the runner does: decimals, exponents and `0x` hex.
+func validNumber(s string) bool {
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		return true
+	}
+	_, err := strconv.ParseInt(s, 0, 64)
+	return err == nil
 }
 
 func isIdentStart(c byte) bool {

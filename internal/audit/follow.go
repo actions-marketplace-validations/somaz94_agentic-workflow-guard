@@ -18,10 +18,11 @@ import (
 // not read as a clean one. maxDepth exists for a repository that calls itself, and
 // the counts for fan-out, where a few short files expand exponentially.
 const (
-	maxDepth     = 8
+	maxDepth     = 10
 	maxFlatSteps = 2000
 	maxCalls     = 1000
 	maxFileSize  = 1 << 20
+	maxResolved  = 1 << 16
 )
 
 // scanTimeout is the backstop for anything the counts do not see.
@@ -90,14 +91,14 @@ func (a *auditor) callerState(ctx reach.Context) reach.State {
 	return reach.Combine(c.a.jobState(c.job, ctx, map[string]bool{}), c.a.callerState(ctx))
 }
 
-// hasConfig reports a committed config the agent reads. A directory cannot be read
-// as a file, which still says it is there.
-func (a *auditor) hasConfig(agent *registry.Agent) bool {
+// narrowedByConfig reports a committed config that restricts the agent. Its mere
+// presence says nothing: it may allow everything.
+func (a *auditor) narrowedByConfig(agent *registry.Agent) bool {
 	if a.src == nil {
 		return false
 	}
 	for _, f := range agent.ConfigFiles {
-		if _, err := a.src(f); !errors.Is(err, fs.ErrNotExist) {
+		if data, err := a.src(f); err == nil && agent.NarrowedBy(data) {
 			return true
 		}
 	}
@@ -118,10 +119,20 @@ func localRef(uses string) (string, bool) {
 }
 
 // follow audits a local reusable workflow with its caller's triggers and gates.
-// One on another repository cannot be read without the network, by design.
 func (a *auditor) follow(job *workflow.Job) []Finding {
+	child := a.called(job)
+	if child == nil {
+		return nil
+	}
+	return child.run()
+}
+
+// called opens the workflow a job calls, nil when there is nothing to audit there.
+// One on another repository cannot be read without the network, by design, and a
+// run no outsider can start exposes nothing.
+func (a *auditor) called(job *workflow.Job) *auditor {
 	rel, ok := localRef(job.Uses)
-	if !ok || a.src == nil || a.calling(rel) || a.budget.exceeded() {
+	if !ok || a.src == nil || !a.hasSecretTrigger() || a.calling(rel) || a.budget.exceeded() {
 		return nil
 	}
 	if a.budget.calls++; a.budget.calls > maxCalls {
@@ -143,15 +154,29 @@ func (a *auditor) follow(job *workflow.Job) []Finding {
 	}
 	child := newAuditor(a.reg, a.src, rel, wf, &callSite{a, job}, a.warn)
 	child.budget = a.budget
-	return child.run()
+	return child
 }
 
-// calling reports whether rel is already on the call stack, or the stack is too
-// deep to go on.
+func (a *auditor) hasSecretTrigger() bool {
+	for event := range a.triggers() {
+		if reach.SecretEvents(event) {
+			return true
+		}
+	}
+	return false
+}
+
+// calling reports whether rel is already on the call stack, which GitHub rejects
+// and so is no finding, or the stack is deeper than GitHub allows, which ends the
+// scan rather than silently leaving the rest unread.
 func (a *auditor) calling(rel string) bool {
 	depth := 0
 	for p := a; p != nil; depth++ {
-		if p.file == rel || depth >= maxDepth {
+		if p.file == rel {
+			return true
+		}
+		if depth >= maxDepth {
+			a.budget.reason = fmt.Sprintf("%s is more than %d reusable workflow calls deep", rel, maxDepth)
 			return true
 		}
 		if p.call == nil {
@@ -199,13 +224,25 @@ func (a *auditor) expand(steps []workflow.Step, parent *frame, out *workflow.Job
 // a missing one is usually checked out elsewhere, so neither is worth a warning.
 func (a *auditor) composite(uses string, parent *frame) (string, *workflow.Action) {
 	rel, ok := localRef(uses)
-	if !ok || a.src == nil || (parent != nil && parent.depth >= maxDepth) || a.budget.exceeded() {
+	if !ok || a.src == nil || a.budget.exceeded() {
+		return "", nil
+	}
+	for fr := parent; fr != nil; fr = fr.parent {
+		if path.Dir(fr.file) == rel {
+			return "", nil
+		}
+	}
+	if parent != nil && parent.depth >= maxDepth {
+		a.budget.reason = fmt.Sprintf("%s is more than %d composite actions deep", rel, maxDepth)
 		return "", nil
 	}
 	for _, name := range []string{"action.yml", "action.yaml"} {
 		file := path.Join(rel, name)
 		data, err := a.src(file)
 		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				a.warn(fmt.Sprintf("%s: %v", file, err))
+			}
 			continue
 		}
 		act, err := workflow.ParseAction(data)

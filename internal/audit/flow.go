@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/somaz94/agentic-workflow-guard/internal/expr"
@@ -17,6 +18,8 @@ var (
 	shellOnly  = regexp.MustCompile(`^\$\{?([A-Za-z_]\w*)\}?$`)
 	shellSet   = regexp.MustCompile(`(?m)(?:^|\s)([A-Za-z_]\w*)=["']?([^\s"';]+)`)
 	envWrite   = regexp.MustCompile(`\b([A-Za-z_]\w*)(?:=|<<)`)
+	envPrintf  = regexp.MustCompile(`printf\s+(?:'[^']*'|"[^"]*")\s+["']?([A-Za-z_]\w*)`)
+	envExport  = regexp.MustCompile(`exportVariable\(\s*["'\x60]([A-Za-z_]\w*)`)
 	fileWrite  = regexp.MustCompile("(?:>>?|\\btee(?:\\s+-a)?|\\s-o|--output[= ])\\s*[\"']?([^\\s\"';|&<>()]+)|writeFile(?:Sync)?\\(\\s*[\"'`]([^\"'`]+)")
 )
 
@@ -145,12 +148,18 @@ func (t *tracer) ref(p []string, w where) bool {
 			return t.anyInput(w)
 		}
 		return t.input(p[1], w)
+	case "matrix":
+		return t.origin(w.job.Strategy["matrix"].Value, w) != ""
 	}
 	return false
 }
 
 func (t *tracer) github(p []string, a *auditor) bool {
-	if !a.reg.Untrusted.MatchString(strings.Join(p, ".")) {
+	// `issue[format('body')]` cannot be told from the field, so it counts as the object.
+	if i := slices.Index(p, "*"); i >= 0 {
+		p = p[:i]
+	}
+	if len(p) == 0 || !a.reg.Untrusted.MatchString(strings.Join(p, ".")) {
 		return false
 	}
 	if len(p) <= 2 && (len(p) == 1 || p[1] == "event") {
@@ -220,35 +229,80 @@ func (a *auditor) stepEnvs(job *workflow.Job, idx int) ([]map[string]workflow.In
 	return envs, at
 }
 
-// env resolves a variable the way the runner does: a step's env, then what a prior
-// step wrote to $GITHUB_ENV, then the job's and the workflow's.
+// env resolves a variable the way the runner does: a step's env, then what prior
+// steps wrote to $GITHUB_ENV, then the job's and the workflow's. A name only hides
+// the same spelling further out: an expression's case is lost in parsing, and Linux
+// keeps `PROMPT` and `prompt` apart. Every writer counts because a background step
+// can land after a later one.
 func (t *tracer) env(name string, w where) bool {
 	key := fmt.Sprintf("env/%p/%d/%d/%s", w.job, w.idx, w.envFloor, strings.ToLower(name))
 	return t.once(key, func() bool {
+		hidden := map[string]bool{}
+		carried := func(scope map[string]workflow.Input, at where) bool {
+			for _, k := range sortedKeys(scope) {
+				if strings.EqualFold(k, name) && !hidden[k] {
+					hidden[k] = true
+					if t.origin(scope[k].Value, at) != "" {
+						return true
+					}
+				}
+			}
+			return false
+		}
 		envs, at := w.a.stepEnvs(w.job, w.idx)
 		for level, scope := range envs {
-			if level < w.envFloor {
-				continue
-			}
-			if in, ok := lookup(scope, name); ok {
-				return t.origin(in.Value, where{a: w.a, job: w.job, idx: at[level], envFloor: 1}) != ""
+			if level >= w.envFloor && carried(scope, where{a: w.a, job: w.job, idx: at[level], envFloor: 1}) {
+				return true
 			}
 		}
-		for i := range w.job.Steps[:min(w.idx, len(w.job.Steps))] {
-			run := w.job.Steps[i].Run
-			if strings.Contains(run, "GITHUB_ENV") && writesEnv(run, name) {
-				return t.step(where{a: w.a, job: w.job, idx: i})
+		if w.envFloor <= len(envs) {
+			tainted := false
+			for i := range w.job.Steps[:min(w.idx, len(w.job.Steps))] {
+				for _, written := range envNames(w.job.Steps[i]) {
+					if !strings.EqualFold(written, name) || hidden[written] {
+						continue
+					}
+					tainted = tainted || t.step(where{a: w.a, job: w.job, idx: i})
+				}
+			}
+			if tainted {
+				return true
+			}
+			for i := range w.job.Steps[:min(w.idx, len(w.job.Steps))] {
+				for _, written := range envNames(w.job.Steps[i]) {
+					if strings.EqualFold(written, name) {
+						hidden[written] = true
+					}
+				}
 			}
 		}
-		outer := len(envs)
-		for _, scope := range []map[string]workflow.Input{w.job.Env, w.a.wf.Env} {
-			outer++
-			if in, ok := lookup(scope, name); ok {
-				return outer > w.envFloor && t.origin(in.Value, where{a: w.a, job: w.job, idx: w.idx, envFloor: outer}) != ""
+		for i, scope := range []map[string]workflow.Input{w.job.Env, w.a.wf.Env} {
+			outer := len(envs) + 1 + i
+			if outer > w.envFloor && carried(scope, where{a: w.a, job: w.job, idx: w.idx, envFloor: outer}) {
+				return true
 			}
 		}
 		return false
 	})
+}
+
+// envNames lists the variables a step sets for later steps.
+func envNames(s workflow.Step) []string {
+	var out []string
+	if strings.Contains(s.Run, "GITHUB_ENV") {
+		for _, m := range envWrite.FindAllStringSubmatch(s.Run, -1) {
+			out = append(out, m[1])
+		}
+		for _, m := range envPrintf.FindAllStringSubmatch(s.Run, -1) {
+			out = append(out, m[1])
+		}
+	}
+	for _, name := range sortedKeys(s.With) {
+		for _, m := range envExport.FindAllStringSubmatch(s.With[name].Value, -1) {
+			out = append(out, m[1])
+		}
+	}
+	return out
 }
 
 func (t *tracer) anyEnv(w where) bool {
@@ -261,16 +315,7 @@ func (t *tracer) anyEnv(w where) bool {
 		}
 	}
 	for i := range w.job.Steps[:min(w.idx, len(w.job.Steps))] {
-		if strings.Contains(w.job.Steps[i].Run, "GITHUB_ENV") && t.step(where{a: w.a, job: w.job, idx: i}) {
-			return true
-		}
-	}
-	return false
-}
-
-func writesEnv(run, name string) bool {
-	for _, m := range envWrite.FindAllStringSubmatch(run, -1) {
-		if strings.EqualFold(m[1], name) {
+		if len(envNames(w.job.Steps[i])) > 0 && t.step(where{a: w.a, job: w.job, idx: i}) {
 			return true
 		}
 	}
@@ -347,12 +392,19 @@ func writtenFiles(s workflow.Step) []string {
 	for _, in := range s.With {
 		text += "\n" + in.Value
 	}
+	seen := map[string]bool{}
+	var out []string
+	// An artifact lands where its step says, under a name the run that made it chose.
+	if strings.Contains(strings.ToLower(s.Uses), "actions/download-artifact") {
+		if name := path.Base(s.With["path"].Value); s.With["path"].Value != "" {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
 	vars := map[string]string{}
 	for _, m := range shellSet.FindAllStringSubmatch(s.Run, -1) {
 		vars[m[1]] = m[2]
 	}
-	seen := map[string]bool{}
-	var out []string
 	for _, m := range fileWrite.FindAllStringSubmatch(text, -1) {
 		target := m[1] + m[2]
 		// A redirect to one shell variable means what the script assigned to it.
@@ -393,10 +445,33 @@ func isNameByte(c byte) bool {
 	return c == '_' || c == '.' || c == '-' || '0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }
 
+// calledOutput answers for a job that calls a reusable workflow. Which of its steps
+// feeds an output is declared a level away, so one tainted step taints them all.
+func (t *tracer) calledOutput(need *workflow.Job, w where) bool {
+	return t.once(fmt.Sprintf("called/%p", need), func() bool {
+		child := w.a.called(need)
+		if child == nil {
+			return false
+		}
+		for _, job := range child.wf.Jobs {
+			flat := child.flat(job)
+			for i := range flat.Steps {
+				if t.step(where{a: child, job: flat, idx: i}) {
+					return true
+				}
+			}
+		}
+		return false
+	})
+}
+
 func (t *tracer) jobOutput(job, name string, w where) bool {
 	need := w.a.wf.JobByName(job)
 	if need == nil {
 		return false
+	}
+	if need.Uses != "" {
+		return t.calledOutput(need, w)
 	}
 	out, ok := lookup(need.Outputs, name)
 	if !ok {
@@ -413,6 +488,9 @@ func (t *tracer) jobOutputs(job string, w where) bool {
 	need := w.a.wf.JobByName(job)
 	if need == nil {
 		return false
+	}
+	if need.Uses != "" {
+		return t.calledOutput(need, w)
 	}
 	for name := range need.Outputs {
 		if !w.a.reg.ScalarOutput.MatchString(name) && t.jobOutput(job, name, w) {

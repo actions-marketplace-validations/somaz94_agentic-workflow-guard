@@ -87,3 +87,13 @@ func TestSARIF(t *testing.T) {
 		}
 	}
 }
+
+func TestSummaryNamesWhatWasNotAudited(t *testing.T) {
+	got := Summary(&audit.Report{Warnings: []string{"bad.yml: parse\nerror"}})
+	if !strings.Contains(got, "Not audited") || !strings.Contains(got, "bad.yml: parse error") {
+		t.Errorf("summary = %s", got)
+	}
+	if strings.Contains(Summary(&audit.Report{}), "Not audited") {
+		t.Error("nothing to say without warnings")
+	}
+}

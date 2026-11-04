@@ -18,7 +18,7 @@ func LogWarning(msg string) {
 
 // LogError prints an error in GitHub Actions format.
 func LogError(msg string) {
-	fmt.Printf("::error::%s\n", msg)
+	fmt.Printf("::error::%s\n", strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A").Replace(msg))
 }
 
 // SetOutput writes a key-value pair to the GITHUB_OUTPUT file.

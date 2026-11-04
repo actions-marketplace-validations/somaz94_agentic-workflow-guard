@@ -12,8 +12,8 @@
 #
 # limiting_deny lists the tools a deny list must name for the agent to count as
 # limited whatever else it allows. config_files are committed files that can
-# narrow a wide default: only their presence is read, so the power drops to
-# scoped and no further.
+# narrow a wide default, which they do only when config_pattern matches, and the
+# power then drops to scoped and no further.
 agents:
   - id: claude
     uses: [anthropics/claude-code-action]
@@ -133,7 +133,8 @@ agents:
     run_pattern: '(?:opencode|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*opencode-ai(?:@\S+)?)\s+run(?:\s|$)'
     actor_check: false
     power: broad
-    config_files: [opencode.json, opencode.jsonc, .opencode/opencode.json, .opencode/opencode.jsonc, .opencode/agent, .opencode/agents]
+    config_files: [opencode.json, opencode.jsonc, .opencode/opencode.json, .opencode/opencode.jsonc]
+    config_pattern: '"permission"\s*:\s*"(?:deny|ask)"|"bash"\s*:\s*(?:"(?:deny|ask)"|\{[^}]*"\*"\s*:\s*"(?:deny|ask)")'
     broad_when:
       - {input: run, pattern: '(^|\s)--auto(\s|$)'}
     limited_when_env:
@@ -159,21 +160,21 @@ untrusted_contexts:
   - github\.event\.issue\.(title|body)
   - github\.event\.comment\.body
   - github\.event\.discussion\.(title|body)
-  - github\.event\.pull_request\.(title|body|head|head\.ref|head\.label|head\.repo\.default_branch)
-  - github\.event\.workflow_run\.(display_title|head_branch|head_commit|head_commit\.message|head_commit\.author\.(name|email))
+  - github\.event\.pull_request\.(title|body|head|head\.ref|head\.label|head\.repo|head\.repo\.(default_branch|description))
+  - github\.event\.workflow_run\.(display_title|head_branch|head_commit|head_commit\.message|head_commit\.(author|committer)\.(name|email))
   - github\.head_ref
 
 # A prior step matching this pulls attacker-written text in, so an agent reading
 # that step's output or the file it writes is reading the text too.
-untrusted_fetch_pattern: 'github\.event_path|GITHUB_EVENT_PATH|context\.payload\.(issue|comment|discussion|pull_request)|gh (issue|pr) (view|diff)|gh api [^\n]*(issues|pulls)/|issues\.(get|listComments)\(|pulls\.(get|listFiles)\('
+untrusted_fetch_pattern: 'github\.event_path|GITHUB_EVENT_PATH|github\.event\.workflow_run\.id|context\.payload\.(issue|comment|discussion|pull_request|workflow_run)|gh (issue|pr) (view|diff)|gh api [^\n]*(issues|pulls)/|issues\.(get|listComments)\(|pulls\.(get|listFiles)\('
 
 # An output, env variable or input named like this holds an identifier or a flag,
 # not text, even when the step that set it read attacker-written text along the way.
-scalar_output_pattern: '(?i)(^|[_-])(sha|oid|number|num|id|count|size|url|exists|base_ref)$|^(pr|base|proceed|allowed)$'
+scalar_output_pattern: '(?i)(^|[_-])(sha|oid|number|num|id|count|size|url|exists|base_ref)$'
 
 # A needs or steps output named like this can carry an authorization result. Any
 # other output is flow control, and treating it as a gate would hide a finding.
-gate_output_pattern: '(?i)author|allow|trust|permission|member|collab|admin|maintainer|owner|fork|internal|gate|command|proceed|should|ok$'
+gate_output_pattern: '(?i)(^|[_-]|is|has|can)(authori[sz]ed?|authz|allowed|trusted|member|collaborator|admin|maintainer|owner|permissions?|fork|internal|approved|gate|proceed|ok)($|[_-])'
 
 # A Bash permission on one of these commands runs arbitrary programs, however
 # narrow it reads: `find -exec`, `xargs`, `env`, an interpreter, a build tool.

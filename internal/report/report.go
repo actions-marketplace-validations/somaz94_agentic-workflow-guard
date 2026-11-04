@@ -42,6 +42,12 @@ func Summary(r *audit.Report) string {
 			fmt.Fprintf(&b, "| %s | `%s` | `%s:%d` | %s |\n", f.Severity, f.Rule, f.File, f.Line, strings.ReplaceAll(f.Message, "|", "\\|"))
 		}
 	}
+	if len(r.Warnings) > 0 {
+		b.WriteString("\nNot audited, so the counts above say nothing about these:\n\n")
+		for _, m := range r.Warnings {
+			fmt.Fprintf(&b, "- %s\n", strings.ReplaceAll(m, "\n", " "))
+		}
+	}
 	return b.String()
 }
 

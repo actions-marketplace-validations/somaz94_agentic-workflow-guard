@@ -50,7 +50,7 @@ func TestRunReportsBelowThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"findings=1", "high=1", "medium=0", "low=0", "sarif_file="} {
+	for _, want := range []string{"findings=1", "high=1", "medium=0", "low=0", "warnings=0", "sarif_file="} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("outputs missing %q:\n%s", want, data)
 		}

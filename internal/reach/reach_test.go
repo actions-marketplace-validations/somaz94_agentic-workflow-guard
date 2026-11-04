@@ -2,7 +2,9 @@ package reach
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func ctx(event string, actions ...string) Context {
@@ -54,7 +56,7 @@ func TestEval(t *testing.T) {
 		{"label name absent", "github.event.label.name == 'review'", ctx("pull_request_target"), None},
 		{"action in list", `contains(fromJSON('["opened","labeled"]'), github.event.action)`, ctx("pull_request_target"), Reachable},
 		{"action not in list", `contains(fromJSON('["labeled"]'), github.event.action)`, ctx("pull_request_target"), None},
-		{"pr label needs maintainer", "contains(github.event.pull_request.labels.*.name, 'ok')", ctx("pull_request_target"), None},
+		{"pr label needs maintainer", "contains(github.event.pull_request.labels.*.name, 'ok')", ctx("pull_request_target"), Indeterminate},
 		{"issue label can come from a form", "contains(github.event.issue.labels.*.name, 'bug')", ctx("issues"), Reachable},
 		{"repo pin holds", "github.repository == 'o/r'", ctx("issues"), Reachable},
 		{"repo pin negated", "github.repository != 'o/r'", ctx("issues"), None},
@@ -186,9 +188,14 @@ func TestRunTimeFacts(t *testing.T) {
 	}{
 		{"github.event.pull_request.merged", "pull_request_target", Indeterminate},
 		{"github.event.pull_request.merged == true", "pull_request_target", Indeterminate},
-		{"github.event.workflow_run.pull_requests[0] != null", "workflow_run", None},
-		{"github.event.workflow_run.pull_requests[0].number", "workflow_run", None},
-		{"github.event.workflow_run.pull_requests", "workflow_run", Reachable},
+		{"github.event.workflow_run.pull_requests[0] != null", "workflow_run", Indeterminate},
+		{"github.event.workflow_run.pull_requests[0].number", "workflow_run", Indeterminate},
+		{"github.event.workflow_run.pull_requests", "workflow_run", Indeterminate},
+		{"contains(github.event.pull_request.labels.*.name, 'ok')", "pull_request_target", Indeterminate},
+		{"!contains(github.event.pull_request.labels.*.name, 'skip')", "pull_request_target", Reachable},
+		{"0x1", "issues", Reachable},
+		{"1E3", "issues", Reachable},
+		{"1 < 0x2", "issues", Reachable},
 		{"fromJSON(needs.c.outputs.result).qualified == true", "issues", Indeterminate},
 		{"fromJSON(needs.c.outputs.other).qualified == true", "issues", Reachable},
 	}
@@ -197,5 +204,24 @@ func TestRunTimeFacts(t *testing.T) {
 		if got := Eval(c.src, ctx); got != c.want {
 			t.Errorf("Eval(%q) = %v; want %v", c.src, got, c.want)
 		}
+	}
+}
+
+func TestMergedDependsOnWhatCanRetrigger(t *testing.T) {
+	src := "github.event.pull_request.merged"
+	if got := Eval(src, Context{Event: "pull_request_target", Actions: []string{"closed"}}); got != Indeterminate {
+		t.Errorf("closed: %v", got)
+	}
+	if got := Eval(src, Context{Event: "pull_request_target", Actions: []string{"closed", "edited"}}); got != Reachable {
+		t.Errorf("closed and edited: %v", got)
+	}
+}
+
+func TestLongOrChainStaysSmall(t *testing.T) {
+	src := "contains(!a" + strings.Repeat("||!a", 3000) + ", !a" + strings.Repeat("||!a", 3000) + ")"
+	start := time.Now()
+	Eval(src, Context{Event: "issues", Actions: []string{"opened"}})
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("took %s", d)
 	}
 }

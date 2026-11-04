@@ -41,6 +41,8 @@ type Step struct {
 	Line int
 	With map[string]Input
 	Env  map[string]Input
+	// ContinueOnError is true when the step failing does not stop the job.
+	ContinueOnError bool
 }
 
 // Job is one job. A job that calls a reusable workflow has Uses and no steps.
@@ -51,6 +53,7 @@ type Job struct {
 	Uses        string
 	With        map[string]Input
 	Outputs     map[string]Input
+	Strategy    map[string]Input
 	Permissions Permissions
 	Env         map[string]Input
 	Steps       []Step
@@ -110,21 +113,23 @@ func Parse(data []byte) (*Workflow, error) {
 		return w, nil
 	}
 	for i := 0; i+1 < len(jobs.Content); i += 2 {
-		if j := job(jobs.Content[i], jobs.Content[i+1]); j != nil {
+		if j := job(jobs.Content[i], deref(jobs.Content[i+1])); j != nil {
 			w.Jobs = append(w.Jobs, j)
 		}
 	}
 	return w, nil
 }
 
-// expanded sums the text under a node with aliases counted each time they appear.
-// A node seen on the way down counts as nothing, which ends a self-reference.
+// expanded sums the text under a node with aliases counted each time they appear,
+// plus an overhead per node, because an anchor of empty strings still costs a lot
+// to render. A node seen on the way down counts as nothing, which ends a
+// self-reference.
 func expanded(n *yaml.Node, memo map[*yaml.Node]int64) int64 {
 	if v, ok := memo[n]; ok {
 		return v
 	}
 	memo[n] = 0
-	size := int64(len(n.Value))
+	size := int64(len(n.Value)) + 32
 	if n.Alias != nil {
 		size += expanded(n.Alias, memo)
 	}
@@ -162,8 +167,9 @@ func job(key, n *yaml.Node) *Job {
 		If:          scalar(get(n, "if")),
 		Needs:       list(get(n, "needs")),
 		Uses:        scalar(get(n, "uses")),
-		With:        inputs(get(n, "with")),
+		With:        lowerKeys(inputs(get(n, "with"))),
 		Outputs:     inputs(get(n, "outputs")),
+		Strategy:    inputs(get(n, "strategy")),
 		Permissions: permissions(get(n, "permissions")),
 		Env:         inputs(get(n, "env")),
 		Steps:       parseSteps(get(n, "steps")),
@@ -177,18 +183,21 @@ func parseSteps(n *yaml.Node) []Step {
 	}
 	var out []Step
 	for _, s := range n.Content {
+		s = deref(s)
 		if s.Kind != yaml.MappingNode {
 			continue
 		}
+		coe := scalar(get(s, "continue-on-error"))
 		out = append(out, Step{
-			ID:   scalar(get(s, "id")),
-			Name: scalar(get(s, "name")),
-			Uses: scalar(get(s, "uses")),
-			Run:  scalar(get(s, "run")),
-			If:   scalar(get(s, "if")),
-			Line: s.Line,
-			With: inputs(get(s, "with")),
-			Env:  inputs(get(s, "env")),
+			ID:              scalar(get(s, "id")),
+			Name:            scalar(get(s, "name")),
+			Uses:            scalar(get(s, "uses")),
+			Run:             scalar(get(s, "run")),
+			If:              scalar(get(s, "if")),
+			Line:            s.Line,
+			With:            lowerKeys(inputs(get(s, "with"))),
+			Env:             inputs(get(s, "env")),
+			ContinueOnError: coe != "" && coe != "false",
 		})
 	}
 	return out
@@ -232,7 +241,7 @@ func list(n *yaml.Node) []string {
 	var out []string
 	if n.Kind == yaml.SequenceNode {
 		for _, c := range n.Content {
-			if c.Kind == yaml.ScalarNode {
+			if c = deref(c); c.Kind == yaml.ScalarNode {
 				out = append(out, c.Value)
 			}
 		}
@@ -279,6 +288,19 @@ func permissions(n *yaml.Node) Permissions {
 		sort.Strings(p.Writes)
 	}
 	return p
+}
+
+// lowerKeys normalizes `with:` names, which the runner matches without regard to
+// case. `env:` names keep theirs, because on Linux they are case-sensitive.
+func lowerKeys(in map[string]Input) map[string]Input {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]Input, len(in))
+	for k, v := range in {
+		out[strings.ToLower(k)] = v
+	}
+	return out
 }
 
 // defaults reads an `inputs:` declaration, keeping each input's default.

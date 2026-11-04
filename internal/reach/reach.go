@@ -5,6 +5,7 @@ package reach
 
 import (
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -154,6 +155,10 @@ type value struct {
 	consts    []constant
 	items     []string
 	uncertain bool
+	// labels marks a pull request's labels, whose presence is a gate only at first.
+	labels bool
+	// openWhenNegated marks a test that gates when true and says nothing when false.
+	openWhenNegated bool
 }
 
 func str(ss ...string) value {
@@ -215,7 +220,7 @@ func (v value) surelyTrue() bool {
 func union(a, b value) value {
 	u := a.uncertain || b.uncertain
 	if a.kind == kConst && b.kind == kConst {
-		return value{kind: kConst, consts: append(append([]constant{}, a.consts...), b.consts...), uncertain: u}
+		return value{kind: kConst, consts: distinct(append(append([]constant{}, a.consts...), b.consts...)), uncertain: u}
 	}
 	if a.kind == b.kind {
 		a.uncertain = u
@@ -232,6 +237,20 @@ func union(a, b value) value {
 		return a
 	}
 	return value{kind: kFree, uncertain: u}
+}
+
+// distinct keeps a chain of `||` from growing the set, which a comparison walks
+// pair by pair.
+func distinct(in []constant) []constant {
+	seen := make(map[constant]bool, len(in))
+	out := in[:0]
+	for _, c := range in {
+		if !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func isNullOnly(v value) bool {
@@ -269,7 +288,7 @@ func (e *evaluator) eval(n expr.Node) value {
 		v := e.eval(x.X)
 		canTrue, canFalse := v.truth()
 		out := boolean(canFalse, canTrue)
-		out.uncertain = v.uncertain
+		out.uncertain = v.uncertain && !v.openWhenNegated
 		return out
 	case *expr.Binary:
 		return e.binary(x)
@@ -377,6 +396,11 @@ func (e *evaluator) call(c *expr.Call) value {
 	case "always", "success":
 		out = boolean(true, false)
 	case "contains":
+		if len(args) == 2 && args[0].labels {
+			out = boolean(true, true)
+			out.uncertain, out.openWhenNegated = true, true
+			return out
+		}
 		out = search(args, containsText)
 	case "startswith":
 		out = search(args, strings.HasPrefix)
@@ -495,12 +519,10 @@ func (e *evaluator) resolve(path []string) value {
 			return e.resolveEvent(path[2:])
 		}
 		return value{kind: kFree}
-	case "needs", "steps", "inputs":
+	case "needs", "steps", "inputs", "env":
 		if e.ctx.IsGate != nil && !e.ctx.IsGate(path) {
 			return value{kind: kFree}
 		}
-		return value{kind: kFree, uncertain: true}
-	case "env":
 		return value{kind: kFree, uncertain: true}
 	}
 	return value{kind: kFree}
@@ -597,15 +619,15 @@ func (e *evaluator) resolveObject(rest []string, ownedByActor bool) value {
 	case rest[0] == "pull_request" && field == "head.repo.fork":
 		return boolean(true, false)
 	case rest[0] == "pull_request" && field == "merged":
-		// A maintainer merged it, which is a review of a kind but not one of this text.
+		// A maintainer merged it, a review of a kind but not of text the author can
+		// still edit afterwards.
 		out := boolean(true, true)
-		out.uncertain = true
+		out.uncertain = !slices.Contains(e.ctx.Actions, "edited")
 		return out
-	case rest[0] == "workflow_run" && field == "pull_requests":
-		// GitHub leaves this empty for a pull request from a fork.
-		return value{kind: kArray}
-	case rest[0] == "workflow_run" && strings.HasPrefix(field, "pull_requests."):
-		return null()
+	case rest[0] == "workflow_run" && (field == "pull_requests" || strings.HasPrefix(field, "pull_requests.")):
+		// Empty for a fork in practice, but GitHub fills it by matching the head
+		// branch, and a fork can name a branch after an open pull request's.
+		return value{kind: kFree, uncertain: true}
 	case rest[0] == "pull_request" && (field == "head.repo.full_name" || field == "head.repo.owner.login" || field == "head.user.login"):
 		return value{kind: kIdentity}
 	case rest[0] == "workflow_run" && (field == "head_repository.full_name" || field == "head_repository.owner.login"):
@@ -613,8 +635,9 @@ func (e *evaluator) resolveObject(rest []string, ownedByActor bool) value {
 	case rest[0] == "workflow_run" && (field == "event" || field == "conclusion" || field == "status"):
 		return value{kind: kFree}
 	case rest[0] == "pull_request" && field == "labels.*.name":
-		// Only a maintainer can label a pull request, and templates cannot.
-		return value{kind: kArray}
+		// Only a maintainer can add a label, but it stays, and the author's next push
+		// runs with it in place.
+		return value{kind: kFree, labels: true}
 	case strings.HasPrefix(field, "base.repo."):
 		return value{kind: kSelf}
 	case strings.HasPrefix(field, "labels"):

@@ -73,24 +73,34 @@ func Scan(reg *registry.Registry, root string, ignore []string) (*Report, error)
 	}
 	for _, e := range entries {
 		ext := path.Ext(e.Name())
-		// A `.lock.yml` is compiled by GitHub Agentic Workflows: nobody can fix a
-		// finding in it, and that compiler decides its own gating.
-		if e.IsDir() || (ext != ".yml" && ext != ".yaml") || strings.HasSuffix(e.Name(), ".lock.yml") {
+		if e.IsDir() || (ext != ".yml" && ext != ".yaml") {
 			continue
 		}
+		// GitHub Agentic Workflows compiles x.md to x.lock.yml: nobody can fix a finding
+		// in the output, and that compiler decides its gating. Without the source next
+		// to it, the name alone says nothing and the file runs like any other.
+		if base, ok := strings.CutSuffix(e.Name(), ".lock.yml"); ok {
+			if _, err := repo.Stat(".github/workflows/" + base + ".md"); err == nil {
+				continue
+			}
+		}
+		if b.exceeded() {
+			break
+		}
+		b.calls = 0
 		rel := ".github/workflows/" + e.Name()
 		data, err := read(rel)
 		if err != nil {
 			r.Warnings = append(r.Warnings, fmt.Sprintf("%s: %v", rel, err))
 			continue
 		}
-		r.Files++
 		wf, err := workflow.Parse(data)
 		if err != nil {
 			b.noteParse(rel, err)
 			r.Warnings = append(r.Warnings, fmt.Sprintf("%s: %v", rel, err))
 			continue
 		}
+		r.Files++
 		a := newAuditor(reg, read, rel, wf, nil, warn)
 		a.budget = b
 		r.Findings = append(r.Findings, a.run()...)
@@ -103,12 +113,12 @@ func Scan(reg *registry.Registry, root string, ignore []string) (*Report, error)
 		if err != nil {
 			continue
 		}
-		r.Files++
 		found, err := c.audit(reg, c.path, data)
 		if err != nil {
 			r.Warnings = append(r.Warnings, fmt.Sprintf("%s: %v", c.path, err))
 			continue
 		}
+		r.Files++
 		r.Findings = append(r.Findings, found...)
 	}
 	r.Findings = filter(r.Findings, ignore)

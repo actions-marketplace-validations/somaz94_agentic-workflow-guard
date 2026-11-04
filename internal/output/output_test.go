@@ -1,6 +1,7 @@
 package output
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,5 +99,26 @@ func TestAppendSummary(t *testing.T) {
 	t.Setenv("GITHUB_STEP_SUMMARY", filepath.Join(path, "nested", "s.md"))
 	if err := AppendSummary("x"); err == nil {
 		t.Error("expected an error for an unwritable path")
+	}
+}
+
+func TestLogErrorCannotStartAWorkflowCommand(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	LogError("a\n::error::forged 100%")
+	os.Stdout = saved
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "::error::a%0A::error::forged 100%25\n"; string(got) != want {
+		t.Errorf("got %q; want %q", got, want)
 	}
 }
