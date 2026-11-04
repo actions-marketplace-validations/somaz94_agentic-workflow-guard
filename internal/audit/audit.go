@@ -833,13 +833,15 @@ func matchesAny(rules []registry.Match, inputs map[string]workflow.Input) bool {
 }
 
 // ExecTools returns the tool permissions in text that amount to running any
-// program. A permission with a subcommand, such as `git log:*`, is not one.
+// program. A permission with a subcommand, such as `git log:*`, is not one, unless
+// its open-ended arguments can carry a program.
 func ExecTools(reg *registry.Registry, text string) []string {
 	text = deniedArg.ReplaceAllString(text, " ")
 	var out []string
 	for _, m := range bashTool.FindAllStringSubmatch(text, -1) {
 		cmd := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(m[1], "*"), ":"))
-		if cmd == "" || (!strings.ContainsAny(cmd, " \t") && reg.ExecCommands[cmd]) {
+		if cmd == "" || (!strings.ContainsAny(cmd, " \t") && reg.ExecCommands[cmd]) ||
+			(strings.Contains(m[1], "*") && reg.ExecArguments.MatchString(strings.TrimSpace(m[1]))) {
 			out = append(out, m[0])
 		}
 	}

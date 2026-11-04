@@ -56,7 +56,7 @@ A ref that is only a branch name, such as `github.head_ref`, is reported one lev
 
 ## broad-tools
 
-The agent can run arbitrary commands. That includes permissions that read as narrow but are not: `Bash(find:*)` runs programs through `-exec`, and `Bash(uv:*)` through `uv run`. A permission with a subcommand, such as `Bash(git log:*)`, is not flagged.
+The agent can run arbitrary commands. That includes permissions that read as narrow but are not: `Bash(find:*)` runs programs through `-exec`, `Bash(uv:*)` through `uv run`, and `Bash(python3 -c *)` takes the program as its argument. A permission with a subcommand, such as `Bash(git log:*)`, is not flagged, and neither is a fixed command with no wildcard.
 
 This is reported even behind a real gate, at low severity, because a trusted actor can still be handed malicious text to act on.
 

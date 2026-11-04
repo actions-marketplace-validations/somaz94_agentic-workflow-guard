@@ -87,6 +87,7 @@ type Registry struct {
 	// Untrusted matches a whole context path holding attacker-written text.
 	Untrusted      *regexp.Regexp
 	ExecCommands   map[string]bool
+	ExecArguments  *regexp.Regexp
 	Authorization  *regexp.Regexp
 	Secret         *regexp.Regexp
 	UntrustedFetch *regexp.Regexp
@@ -104,6 +105,7 @@ func parse(data []byte) (*Registry, error) {
 		Agents    []*Agent `yaml:"agents"`
 		Untrusted []string `yaml:"untrusted_contexts"`
 		Exec      []string `yaml:"exec_equivalent_commands"`
+		ExecArgs  string   `yaml:"exec_argument_pattern"`
 		Authz     string   `yaml:"authorization_pattern"`
 		Secret    string   `yaml:"secret_pattern"`
 		Fetch     string   `yaml:"untrusted_fetch_pattern"`
@@ -120,6 +122,9 @@ func parse(data []byte) (*Registry, error) {
 	var err error
 	if r.Untrusted, err = regexp.Compile(`^(` + strings.Join(raw.Untrusted, "|") + `)$`); err != nil {
 		return nil, fmt.Errorf("untrusted_contexts: %w", err)
+	}
+	if r.ExecArguments, err = regexp.Compile(raw.ExecArgs); err != nil {
+		return nil, fmt.Errorf("exec_argument_pattern: %w", err)
 	}
 	if r.Authorization, err = regexp.Compile(raw.Authz); err != nil {
 		return nil, fmt.Errorf("authorization_pattern: %w", err)

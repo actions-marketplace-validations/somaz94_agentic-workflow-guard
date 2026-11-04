@@ -177,6 +177,7 @@ func TestParseErrors(t *testing.T) {
 		"untrusted_fetch_pattern: '('",
 		"gate_output_pattern: '('",
 		"scalar_output_pattern: '('",
+		"exec_argument_pattern: '('",
 		"agents: [{id: a, broad_when: [{input: b, pattern: '('}]}]",
 		"agents: [{id: a, run_pattern: '('}]",
 		"agents: [{id: a, config_pattern: '('}]",

@@ -213,6 +213,12 @@ exec_equivalent_commands:
   - yarn
   - zsh
 
+# A Bash permission on a command like this with open-ended arguments also runs
+# arbitrary programs: the arguments are the program, or can add one, as `find -exec`,
+# awk's `system()` and sed's `e` do. A fixed command with no wildcard stays narrow,
+# and so does a runner with its target named, such as `uv run pytest:*`.
+exec_argument_pattern: '^(find|awk|sed|xargs|env|sudo|tar)\s|^(python3?|node|perl|ruby|php|bash|sh|zsh|deno|bun)\s+-\w*[ce]\b|^git\s+-c\b|^(deno|bun|uv|npm|pnpm|yarn|go|cargo)\s+(run|eval|exec|x)\s*[:*]|^docker\s+(run|exec)\b|^pnpm\s+dlx\b'
+
 # Prior steps or jobs matching this can enforce authorization at run time, in a
 # way an `if:` does not show. Findings behind one are reported as unverified.
 authorization_pattern: 'allowed_?[uU]sers|author_association|getCollaboratorPermissionLevel|collaborators/|checkMembership|/members/|check-user-permission|check-actor-permission|action-repository-permission'
