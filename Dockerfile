@@ -16,6 +16,7 @@ WORKDIR /build
 # bites an explicit DOCKER_BUILDKIT=0.
 ARG TARGETOS=linux
 ARG TARGETARCH
+ARG VERSION=dev
 
 # Copy module manifests first to leverage Docker layer cache for `go mod download`.
 
@@ -26,7 +27,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build \
       -trimpath \
-      -ldflags="-s -w" \
+      -ldflags="-s -w -X github.com/somaz94/agentic-workflow-guard/internal/action.Version=${VERSION}" \
       -o /agentic-workflow-guard ./cmd/main.go
 
 # Runtime stage

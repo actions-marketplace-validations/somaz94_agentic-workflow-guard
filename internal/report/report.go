@@ -91,16 +91,20 @@ func SARIF(r *audit.Report, version string) ([]byte, error) {
 		results = append(results, result{f.Rule, levels[f.Severity], message{f.Message},
 			[]location{{physical{artifact{f.File}, region{f.Line}}}}})
 	}
+	driver := map[string]interface{}{
+		"name":           "agentic-workflow-guard",
+		"informationUri": "https://github.com/somaz94/agentic-workflow-guard",
+		"rules":          rules,
+	}
+	// SARIF makes this optional, and `dev` on a released image would name no version.
+	if version != "" && version != "dev" {
+		driver["version"] = version
+	}
 	doc := map[string]interface{}{
 		"$schema": "https://json.schemastore.org/sarif-2.1.0.json",
 		"version": "2.1.0",
 		"runs": []map[string]interface{}{{
-			"tool": map[string]interface{}{"driver": map[string]interface{}{
-				"name":           "agentic-workflow-guard",
-				"informationUri": "https://github.com/somaz94/agentic-workflow-guard",
-				"version":        version,
-				"rules":          rules,
-			}},
+			"tool":    map[string]interface{}{"driver": driver},
 			"results": results,
 		}},
 	}

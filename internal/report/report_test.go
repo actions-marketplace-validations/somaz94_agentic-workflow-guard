@@ -97,3 +97,32 @@ func TestSummaryNamesWhatWasNotAudited(t *testing.T) {
 		t.Error("nothing to say without warnings")
 	}
 }
+
+func TestSARIFNamesOnlyARealVersion(t *testing.T) {
+	version := func(v string) interface{} {
+		t.Helper()
+		data, err := SARIF(&audit.Report{}, v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Runs []struct {
+				Tool struct {
+					Driver map[string]interface{} `json:"driver"`
+				} `json:"tool"`
+			} `json:"runs"`
+		}
+		if err := json.Unmarshal(data, &doc); err != nil {
+			t.Fatal(err)
+		}
+		return doc.Runs[0].Tool.Driver["version"]
+	}
+	if got := version("v1.2.3"); got != "v1.2.3" {
+		t.Errorf("version = %v", got)
+	}
+	for _, v := range []string{"dev", ""} {
+		if got := version(v); got != nil {
+			t.Errorf("version(%q) = %v; want none", v, got)
+		}
+	}
+}
