@@ -1,4 +1,4 @@
-name: Agentic Workflow Guard
+name: Agentic Workflow Audit
 description: Audit GitHub Actions workflows that run AI agents for prompt-injection exposure
 author: somaz94
 

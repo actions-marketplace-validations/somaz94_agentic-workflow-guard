@@ -33,7 +33,7 @@ func escapeProperty(s string) string {
 // Summary renders the Markdown job summary.
 func Summary(r *audit.Report) string {
 	var b strings.Builder
-	b.WriteString("## Agentic Workflow Guard\n\n")
+	b.WriteString("## Agentic Workflow Audit\n\n")
 	fmt.Fprintf(&b, "Scanned %d file(s): %d high, %d medium, %d low.\n",
 		r.Files, r.Count(audit.High), r.Count(audit.Medium), r.Count(audit.Low))
 	if len(r.Findings) > 0 {
