@@ -43,9 +43,12 @@ type Finding struct {
 
 var (
 	statusOverride = regexp.MustCompile(`(?i)\b(always|failure|cancelled)\s*\(`)
-	headCheckout   = regexp.MustCompile(`github\.event\.pull_request\.head\.sha|github\.event\.workflow_run\.head_sha|refs/pull/|(steps|needs)\.[\w-]+\.outputs\.[\w-]*(sha|head|ref)`)
+	headCheckout   = regexp.MustCompile(`github\.event\.pull_request\.head\.sha|github\.event\.workflow_run\.head_sha|refs/pull/`)
+	refOutput      = regexp.MustCompile(`(?:steps|needs)\.[\w-]+\.outputs\.([\w-]*(?:sha|head|ref)[\w-]*)`)
+	mcpConfig      = regexp.MustCompile(`--mcp-config`)
+	envAssign      = regexp.MustCompile(`\b([A-Za-z_]\w*)=["']?([^\s"';]+)`)
 	headRefName    = regexp.MustCompile(`github\.event\.pull_request\.head\.ref|github\.head_ref|github\.event\.workflow_run\.head_branch`)
-	headRepo       = regexp.MustCompile(`github\.event\.pull_request\.head\.repo\.|github\.event\.workflow_run\.head_repository\.|steps\.[\w-]+\.outputs\.[\w-]*repo`)
+	headRepo       = regexp.MustCompile(`github\.event\.pull_request\.head\.repo\.|github\.event\.workflow_run\.head_repository\.|(?:steps|needs)\.[\w-]+\.outputs\.[\w-]*repo`)
 	sameRepoRef    = regexp.MustCompile(`head\.repo\.full_name\s*==\s*github\.repository\s*&&`)
 	prCheckout     = regexp.MustCompile(`gh pr checkout`)
 	prFetch        = regexp.MustCompile(`refs/pull/|pull/[^ ]*/(head|merge)`)
@@ -68,6 +71,9 @@ type auditor struct {
 	call   *callSite
 	warn   func(string)
 	budget *budget
+	// authorized remembers each step's answer: one `if:` can ask about a whole job
+	// many times over.
+	authorized map[*workflow.Job]map[int]bool
 	// flats and frames hold each job with its composite actions expanded in place.
 	flats  map[*workflow.Job]*workflow.Job
 	frames map[*workflow.Job][]*frame
@@ -75,7 +81,8 @@ type auditor struct {
 
 func newAuditor(reg *registry.Registry, src Source, file string, wf *workflow.Workflow, call *callSite, warn func(string)) *auditor {
 	return &auditor{reg: reg, file: file, wf: wf, src: src, call: call, warn: warn, budget: newBudget(),
-		flats: map[*workflow.Job]*workflow.Job{}, frames: map[*workflow.Job][]*frame{}}
+		authorized: map[*workflow.Job]map[int]bool{},
+		flats:      map[*workflow.Job]*workflow.Job{}, frames: map[*workflow.Job][]*frame{}}
 }
 
 // Workflow audits one parsed workflow file by itself, following nothing outside
@@ -179,15 +186,10 @@ func (a *auditor) gateOutput(job *workflow.Job, idx int) func([]string) bool {
 			if a.reg.Authorization.MatchString(need.If) || a.reg.GateOutput.MatchString(need.Name) {
 				return true
 			}
-			for _, st := range a.flat(need).Steps {
-				if a.authorizes(st) {
-					return true
-				}
-			}
-			return false
+			return a.jobAuthorizes(need)
 		}
 		if i := a.priorStep(job, idx, ref[1]); i >= 0 {
-			return a.authorizes(job.Steps[i])
+			return a.stepAuthorizes(job, i)
 		}
 		return true
 	}
@@ -205,8 +207,13 @@ func (a *auditor) stepState(job *workflow.Job, idx int, ctx reach.Context) reach
 	if statusOverride.MatchString(job.Steps[idx].If) {
 		return s
 	}
-	for _, prior := range job.Steps[:idx] {
-		if a.authorizes(prior) {
+	for fr := a.frameAt(job, idx); fr != nil; fr = fr.parent {
+		if statusOverride.MatchString(job.Steps[fr.at].If) {
+			return s
+		}
+	}
+	for i := range job.Steps[:idx] {
+		if a.stepAuthorizes(job, i) {
 			s = reach.Combine(s, reach.Indeterminate)
 		}
 	}
@@ -228,13 +235,38 @@ func (a *auditor) jobState(job *workflow.Job, ctx reach.Context, seen map[string
 			continue
 		}
 		s = reach.Combine(s, a.jobState(need, ctx, seen))
-		for _, st := range a.flat(need).Steps {
-			if a.authorizes(st) {
-				s = reach.Combine(s, reach.Indeterminate)
-			}
+		if a.jobAuthorizes(need) {
+			s = reach.Combine(s, reach.Indeterminate)
 		}
 	}
 	return s
+}
+
+func (a *auditor) jobAuthorizes(job *workflow.Job) bool {
+	if job.ContinueOnError {
+		return false
+	}
+	flat := a.flat(job)
+	for i := range flat.Steps {
+		if a.stepAuthorizes(flat, i) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *auditor) stepAuthorizes(job *workflow.Job, i int) bool {
+	known := a.authorized[job]
+	if known == nil {
+		known = map[int]bool{}
+		a.authorized[job] = known
+	}
+	v, ok := known[i]
+	if !ok {
+		v = a.authorizes(job.Steps[i])
+		known[i] = v
+	}
+	return v
 }
 
 // authorizes reports a step that can stop the job on an authorization check. One
@@ -284,7 +316,7 @@ func (a *auditor) step(job *workflow.Job, idx int, agent *registry.Agent) []Find
 	st := job.Steps[idx]
 	exp := a.exposure(job, idx)
 	wildLine, wildcard, computed := anyWildcard(st, agent.WildcardInputs)
-	botLine, botWildcard, _ := anyWildcard(st, agent.BotWildcardInputs)
+	botLine, botWildcard, botComputed := anyWildcard(st, agent.BotWildcardInputs)
 
 	state := exp.state
 	switch {
@@ -365,11 +397,15 @@ func (a *auditor) step(job *workflow.Job, idx int, agent *registry.Agent) []Find
 				fmt.Sprintf("the %s agent runs after checking out a branch name %s chooses. It resolves in this repository, unless it is spelled like refs/pull/1/head, which actions/checkout fetches as a pull request.", agent.ID, who))
 		}
 	}
-	if botWildcard && exp.state != reach.None && !wildcard {
+	if (botWildcard || botComputed) && exp.state != reach.None && !wildcard && !computed {
 		saved := state
 		state = exp.state
-		add(RuleOpenInvocation, Medium, botLine,
-			fmt.Sprintf("any GitHub App can invoke the %s agent because its bot allowlist is '*'.", agent.ID))
+		msg := fmt.Sprintf("any GitHub App can invoke the %s agent because its bot allowlist is '*'.", agent.ID)
+		if botComputed {
+			state = reach.Combine(state, reach.Indeterminate)
+			msg = fmt.Sprintf("any GitHub App may be able to invoke the %s agent, because an expression sets its bot allowlist and can hold '*'.", agent.ID)
+		}
+		add(RuleOpenInvocation, Medium, botLine, msg)
 		state = saved
 	}
 	if power == registry.Broad {
@@ -397,7 +433,7 @@ func (a *auditor) withScopedEnv(job *workflow.Job, idx int, st workflow.Step) wo
 	written := map[string]workflow.Input{}
 	for _, prior := range job.Steps[:idx] {
 		if strings.Contains(prior.Run, "GITHUB_ENV") {
-			for _, m := range shellSet.FindAllStringSubmatch(prior.Run, -1) {
+			for _, m := range envAssign.FindAllStringSubmatch(prior.Run, -1) {
 				written[m[1]] = workflow.Input{Value: m[2]}
 			}
 		}
@@ -449,24 +485,29 @@ const (
 
 func (a *auditor) checkoutOf(job *workflow.Job, idx int) checkout {
 	found := baseCode
-	for i, s := range job.Steps[:idx] {
+	// A command-line agent can check out in its own script, before it starts.
+	for i, s := range job.Steps[:idx+1] {
 		// Fetching a pull request's refs only stores objects; the working tree is
 		// what an agent reads config and instructions from.
 		if prCheckout.MatchString(s.Run) || (prFetch.MatchString(s.Run) && gitCheckout.MatchString(s.Run)) {
 			return headCode
 		}
-		if !strings.Contains(strings.ToLower(s.Uses), "actions/checkout") {
+		if i == idx || !strings.Contains(strings.ToLower(s.Uses), "actions/checkout") {
 			continue
+		}
+		if headRepo.MatchString(withPaths(a.resolved(s.With["repository"].Value, job, i))) {
+			return headCode
 		}
 		ref := a.resolved(s.With["ref"].Value, job, i)
 		// `same repo && head.sha || base.sha` checks out the base for a fork, which
 		// takes the branch after `||`, so that is the part a fork reaches.
-		first, rest, hasOr := strings.Cut(ref, "||")
-		if sameRepoRef.MatchString(first) && hasOr && !headCheckout.MatchString(rest) && !headRefName.MatchString(rest) {
-			continue
+		if first, rest, hasOr := strings.Cut(ref, "||"); hasOr && sameRepoRef.MatchString(first) {
+			if rest = withPaths("${{ " + rest); !namesHead(rest) && !headRefName.MatchString(rest) {
+				continue
+			}
 		}
 		ref = withPaths(ref)
-		if headCheckout.MatchString(ref) || headRepo.MatchString(withPaths(a.resolved(s.With["repository"].Value, job, i))) {
+		if namesHead(ref) {
 			return headCode
 		}
 		if headRefName.MatchString(ref) {
@@ -476,26 +517,75 @@ func (a *auditor) checkoutOf(job *workflow.Job, idx int) checkout {
 	return found
 }
 
-// resolved writes out what `env.X` and `inputs.X` stand for, so a value set further
-// away reads like one written here. Three rounds cover what real workflows chain,
-// and the cap keeps a hostile one small.
-func (a *auditor) resolved(value string, job *workflow.Job, idx int) string {
-	for round := 0; round < 3 && len(value) < maxResolved; round++ {
-		value = refName.ReplaceAllStringFunc(value, func(ref string) string {
-			scope, name, _ := strings.Cut(ref, ".")
-			if scope == "inputs" {
-				return a.inputText(name, job, idx, ref)
-			}
-			envs, _ := a.stepEnvs(job, idx)
-			for _, m := range append(envs, job.Env, a.wf.Env) {
-				if in, ok := lookup(m, name); ok {
-					return in.Value
-				}
-			}
-			return ref
-		})
+// namesHead reports a ref naming the head commit, directly or through an output
+// whose name says so. One named for the base, such as `base_sha`, is the opposite.
+func namesHead(ref string) bool {
+	if headCheckout.MatchString(ref) {
+		return true
 	}
-	return value
+	for _, m := range refOutput.FindAllStringSubmatch(ref, -1) {
+		if !strings.Contains(strings.ToLower(m[1]), "base") {
+			return true
+		}
+	}
+	return false
+}
+
+// resolved writes out what `env.X` and `inputs.X` stand for, each in the scope it
+// was written in, so a value set further away reads like one written here. Growing
+// past maxResolved ends the scan rather than leaving part of a value unread.
+func (a *auditor) resolved(value string, job *workflow.Job, idx int) string {
+	size := len(value)
+	return a.resolve(value, job, idx, 0, &size)
+}
+
+func (a *auditor) resolve(value string, job *workflow.Job, idx, depth int, size *int) string {
+	if depth >= maxResolveDepth {
+		return value
+	}
+	return refName.ReplaceAllStringFunc(value, func(ref string) string {
+		scope, name, _ := strings.Cut(ref, ".")
+		text, owner, ownerJob, ownerIdx, ok := a.refText(scope, name, job, idx)
+		if !ok {
+			return ref
+		}
+		if *size += len(text); *size > maxResolved {
+			a.budget.reason = fmt.Sprintf("a checkout value expands past %d bytes", maxResolved)
+			return ref
+		}
+		return owner.resolve(text, ownerJob, ownerIdx, depth+1, size)
+	})
+}
+
+// refText finds the text behind one reference and the scope that text reads from.
+func (a *auditor) refText(scope, name string, job *workflow.Job, idx int) (string, *auditor, *workflow.Job, int, bool) {
+	if scope == "env" {
+		envs, _ := a.stepEnvs(job, idx)
+		for _, m := range append(envs, job.Env, a.wf.Env) {
+			if in, ok := lookup(m, name); ok {
+				return in.Value, a, job, idx, true
+			}
+		}
+		return "", nil, nil, 0, false
+	}
+	if fr := a.frameAt(job, idx); fr != nil {
+		if in, ok := lookup(fr.with, name); ok {
+			return in.Value, a, job, fr.at, true
+		}
+		if in, ok := lookup(fr.defaults, name); ok {
+			return in.Value, a, job, fr.at, true
+		}
+		return "", nil, nil, 0, false
+	}
+	if c := a.call; c != nil {
+		if in, ok := lookup(c.job.With, name); ok {
+			return in.Value, c.a, c.a.flat(c.job), 0, true
+		}
+		if in, ok := lookup(a.wf.CallInputs, name); ok {
+			return in.Value, a, job, idx, true
+		}
+	}
+	return "", nil, nil, 0, false
 }
 
 // withPaths appends every path in normalized form, so `head['sha']` reads like
@@ -508,21 +598,6 @@ func withPaths(value string) string {
 		}
 	}
 	return value + " " + strings.Join(paths, " ")
-}
-
-func (a *auditor) inputText(name string, job *workflow.Job, idx int, fallback string) string {
-	scopes := []map[string]workflow.Input{}
-	if fr := a.frameAt(job, idx); fr != nil {
-		scopes = append(scopes, fr.with, fr.defaults)
-	} else if a.call != nil {
-		scopes = append(scopes, a.call.job.With, a.wf.CallInputs)
-	}
-	for _, scope := range scopes {
-		if in, ok := lookup(scope, name); ok {
-			return in.Value
-		}
-	}
-	return fallback
 }
 
 // untrustedInput finds attacker-written text in the agent's inputs, for an event
@@ -608,8 +683,8 @@ func Power(reg *registry.Registry, agent *registry.Agent, st workflow.Step) regi
 	// An allowlist only pre-approves tools, so bypass mode goes around one. A deny
 	// list still holds.
 	bypass := matchesAny(agent.BroadWhen, st.With) || matchesAny(agent.BroadWhenEnv, st.Env)
-	limited := matchesAny(agent.LimitedWhen, st.With) || matchesAny(agent.LimitedWhenEnv, st.Env) ||
-		(readOnlyAllowlist(agent, st) && !bypass) || deniesEveryAction(agent, st)
+	limited := (matchesAny(agent.LimitedWhen, st.With) && !bypass) || matchesAny(agent.LimitedWhenEnv, st.Env) ||
+		(readOnlyAllowlist(agent, st) && !bypass) || (deniesEveryAction(agent, st) && !(bypass && usesMCP(agent, st)))
 	if agent.SettingsInput != "" && readOnlySettings(st.With[agent.SettingsInput].Value) {
 		limited = true
 	}
@@ -633,6 +708,12 @@ func Power(reg *registry.Registry, agent *registry.Agent, st workflow.Step) regi
 		return registry.Scoped
 	}
 	return agent.DefaultPower()
+}
+
+// usesMCP reports a configured MCP server, whose tools bypass mode approves unless
+// a deny list names them, which it cannot do ahead of knowing them.
+func usesMCP(agent *registry.Agent, st workflow.Step) bool {
+	return agent.AllowlistInput != "" && mcpConfig.MatchString(st.With[agent.AllowlistInput].Value)
 }
 
 // deniesEveryAction reports a deny list naming every tool that can act, which

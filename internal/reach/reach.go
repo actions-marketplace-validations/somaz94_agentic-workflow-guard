@@ -220,7 +220,8 @@ func (v value) surelyTrue() bool {
 func union(a, b value) value {
 	u := a.uncertain || b.uncertain
 	if a.kind == kConst && b.kind == kConst {
-		return value{kind: kConst, consts: distinct(append(append([]constant{}, a.consts...), b.consts...)), uncertain: u}
+		return value{kind: kConst, consts: distinct(append(append([]constant{}, a.consts...), b.consts...)), uncertain: u,
+			openWhenNegated: a.openWhenNegated && b.openWhenNegated}
 	}
 	if a.kind == b.kind {
 		a.uncertain = u
@@ -335,11 +336,24 @@ func (e *evaluator) binary(b *expr.Binary) value {
 		}
 		out := boolean(canEq, canNe)
 		out.uncertain = l.uncertain || r.uncertain
+		// `merged == false` is `!merged`, which an outsider's open pull request passes.
+		if testsFalse(l, r, b.Op) || testsFalse(r, l, b.Op) {
+			out.uncertain = false
+		}
 		return out
 	}
 	out := boolean(true, true)
 	out.uncertain = l.uncertain || r.uncertain
 	return out
+}
+
+// testsFalse reports a comparison asking whether v, a test that gates only when
+// true, came out false.
+func testsFalse(v, other value, op string) bool {
+	if !v.openWhenNegated || other.kind != kConst || len(other.consts) != 1 || !other.consts[0].isBool {
+		return false
+	}
+	return (op == "==") == (other.consts[0].text == "false")
 }
 
 func falsy(v value) value {
@@ -623,6 +637,7 @@ func (e *evaluator) resolveObject(rest []string, ownedByActor bool) value {
 		// still edit afterwards.
 		out := boolean(true, true)
 		out.uncertain = !slices.Contains(e.ctx.Actions, "edited")
+		out.openWhenNegated = true
 		return out
 	case rest[0] == "workflow_run" && (field == "pull_requests" || strings.HasPrefix(field, "pull_requests.")):
 		// Empty for a fork in practice, but GitHub fills it by matching the head

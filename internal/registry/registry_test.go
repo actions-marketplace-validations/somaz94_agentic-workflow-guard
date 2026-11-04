@@ -51,6 +51,11 @@ func TestFindRun(t *testing.T) {
 		`copilot -p "$(cat p.md)"`:                            "copilot-cli",
 		"opencode run x":                                      "opencode-cli",
 		"$HOME/.local/bin/claude -p x":                        "claude-cli",
+		"env FOO=bar claude -p x":                             "claude-cli",
+		"sudo -u x claude -p y":                               "claude-cli",
+		"/usr/bin/env claude -p x":                            "claude-cli",
+		`FOO="a b" claude -p x`:                               "claude-cli",
+		"out=`claude -p x`":                                   "claude-cli",
 		"./claude -p x":                                       "claude-cli",
 		`bash -c "claude -p x"`:                               "claude-cli",
 		"sh -lc 'codex exec x'":                               "codex-cli",
@@ -102,11 +107,15 @@ func TestNarrowedBy(t *testing.T) {
 		}
 	}
 	for src, want := range map[string]bool{
-		`{}`:                                    false,
-		`{"permission": {"bash": "allow"}}`:     false,
-		`{"permission": {"bash": "deny"}}`:      true,
-		`{"permission": "ask"}`:                 true,
-		`{"bash": {"*": "deny", "gh *": "ok"}}`: true,
+		`{}`:                                false,
+		`{"permission": {"bash": "allow"}}`: false,
+		`{"permission": {"bash": "deny"}}`:  true,
+		`{"permission": "ask"}`:             true,
+		`{"permission": {"bash": {"*": "deny", "gh *": "allow"}}}`:                     true,
+		`{"agent": {"plan": {"permission": {"bash": "deny"}}}, "permission": "allow"}`: false,
+		"// note\n{\"permission\": \"deny\"}":                                          true,
+		"{\n  // \"permission\": \"deny\"\n}":                                          false,
+		`not json`:                                                                     false,
 	} {
 		if got := open.NarrowedBy([]byte(src)); got != want {
 			t.Errorf("NarrowedBy(%s) = %v", src, got)

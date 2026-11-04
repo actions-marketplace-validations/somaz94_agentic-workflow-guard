@@ -34,7 +34,7 @@ outputs:
   low:
     description: 'Number of low-severity findings'
   warnings:
-    description: 'Number of files that could not be audited'
+    description: 'Number of warnings about files that could not be audited'
   sarif_file:
     description: 'Path of the SARIF file, empty when none was written'
 

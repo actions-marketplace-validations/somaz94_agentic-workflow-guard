@@ -241,6 +241,40 @@ func TestCalledOutputCarriesWhatItsStepsRead(t *testing.T) {
 	}
 }
 
+func TestCalledOutputThroughANestedCall(t *testing.T) {
+	got, _ := follow(t, map[string]string{
+		mainWF:                     "on: issues\npermissions: {}\njobs:\n  c:\n    uses: ./.github/workflows/w1.yml\n  a:\n    needs: c\n    steps:\n      - uses: actions/ai-inference@v2\n        with:\n          prompt: ${{ needs.c.outputs.t }}\n",
+		".github/workflows/w1.yml": "on: workflow_call\njobs:\n  n:\n    uses: ./.github/workflows/w2.yml\n",
+		".github/workflows/w2.yml": "on: workflow_call\njobs:\n  r:\n    steps:\n      - run: echo \"t=${{ github.event.issue.body }}\" >> \"$GITHUB_OUTPUT\"\n",
+	}, mainWF)
+	if s := summarize(got); !reflect.DeepEqual(s, []string{"low untrusted-input " + mainWF}) {
+		t.Errorf("got %v", s)
+	}
+}
+
+func TestAlwaysOnACallingStepIgnoresTheCheckBefore(t *testing.T) {
+	got, _ := follow(t, map[string]string{
+		mainWF:           "on: issue_comment\njobs:\n  a:\n    steps:\n      - run: gh api repos/o/r/collaborators/x/permission\n      - if: always()\n        uses: ./act\n",
+		"act/action.yml": "runs:\n  using: composite\n  steps:\n    - uses: openai/codex-action@v1\n      with:\n        allow-users: '*'\n",
+	}, mainWF)
+	if len(got) != 1 || got[0].Severity != High || strings.Contains(got[0].Message, "run-time check") {
+		t.Errorf("findings = %+v", got)
+	}
+}
+
+func TestCheckoutRefResolvesInEachCallersScope(t *testing.T) {
+	const act = "act/action.yml"
+	files := map[string]string{
+		mainWF:  "on: pull_request_target\npermissions: {}\njobs:\n  c:\n    uses: ./.github/workflows/agent.yml\n    with:\n      sha: ${{ github.event.pull_request.head.sha }}\n",
+		agentWF: "on: workflow_call\njobs:\n  r:\n    steps:\n      - uses: ./act\n        with:\n          ref: ${{ inputs.sha }}\n",
+		act:     "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v7\n      with:\n        ref: ${{ inputs.ref }}\n    - uses: actions/ai-inference@v2\n",
+	}
+	got, _ := follow(t, files, mainWF)
+	if s := summarize(got); !reflect.DeepEqual(s, []string{"medium untrusted-checkout " + act}) {
+		t.Errorf("got %v", s)
+	}
+}
+
 func TestFollowWarnings(t *testing.T) {
 	_, w := follow(t, map[string]string{
 		mainWF:  "on: issues\njobs:\n  a:\n    uses: ./.github/workflows/agent.yml\n",

@@ -51,7 +51,13 @@ func Scan(reg *registry.Registry, root string, ignore []string) (*Report, error)
 	}
 	defer func() { _ = repo.Close() }()
 	r := &Report{}
-	warn := func(m string) { r.Warnings = append(r.Warnings, m) }
+	warned := map[string]bool{}
+	warn := func(m string) {
+		if !warned[m] {
+			warned[m] = true
+			r.Warnings = append(r.Warnings, m)
+		}
+	}
 	b := newBudget()
 	read := func(rel string) ([]byte, error) {
 		info, err := repo.Stat(rel)

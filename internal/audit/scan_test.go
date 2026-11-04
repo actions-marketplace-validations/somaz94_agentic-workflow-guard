@@ -262,6 +262,18 @@ func TestScanRefusesHostileTrees(t *testing.T) {
 		}
 		write(t, root, ".github/workflows/w.yml", b.String())
 	}
+	expandingRef := func(root string) {
+		write(t, root, ".github/workflows/w.yml", "on: pull_request_target\njobs:\n  a:\n    env:\n      A: "+strings.Repeat("env.B ", 10_000)+"\n      B: "+strings.Repeat("x", 500_000)+"\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: ${{ env.A }}\n      - uses: actions/ai-inference@v2\n")
+	}
+	selfChain := func(root string) {
+		var b strings.Builder
+		b.WriteString("on: issues\njobs:\n  a:\n    env:\n")
+		b.WriteString("    steps:\n      - uses: actions/ai-inference@v2\n        with:\n          prompt: ${{ needs.j0.outputs.x }}\n")
+		for i := 0; i < 5000; i++ {
+			fmt.Fprintf(&b, "  j%d:\n    outputs:\n      x: ${{ needs.j%d.outputs.x }}\n    steps: []\n", i, i+1)
+		}
+		write(t, root, ".github/workflows/w.yml", b.String())
+	}
 	large := func(root string) {
 		write(t, root, ".github/workflows/w.yml", "# "+strings.Repeat("a", maxFileSize)+"\n")
 	}
@@ -281,7 +293,7 @@ func TestScanRefusesHostileTrees(t *testing.T) {
 	}
 	for name, build := range map[string]func(string){
 		"composite fan-out": bomb, "reusable fan-out": fanout, "alias expansion": aliases, "alias expansion of empty strings": emptyAliases,
-		"oversized file": large, "alias expansion in a called workflow": calledAliases, "alias expansion in an action": actionAliases,
+		"oversized file": large, "checkout value that expands": expandingRef, "reference chain": selfChain, "alias expansion in a called workflow": calledAliases, "alias expansion in an action": actionAliases,
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
@@ -377,5 +389,18 @@ func TestScanIsDeterministic(t *testing.T) {
 		} else if got != first {
 			t.Fatalf("run %d differs:\n%s\n%s", i, first, got)
 		}
+	}
+}
+
+func TestScanWarnsOnceAboutOneFile(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "bad/action.yml", "a: [")
+	write(t, root, ".github/workflows/w.yml", "on: issues\njobs:\n  a:\n    steps:\n      - uses: ./bad\n      - uses: ./bad\n")
+	r, err := Scan(reg(t), root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Warnings) != 1 {
+		t.Errorf("warnings = %v", r.Warnings)
 	}
 }

@@ -21,7 +21,7 @@
 | `high` | Number of high-severity findings |
 | `medium` | Number of medium-severity findings |
 | `low` | Number of low-severity findings |
-| `warnings` | Number of files that could not be audited |
+| `warnings` | Number of warnings about files that could not be audited |
 | `sarif_file` | Path of the SARIF file, empty when none was written |
 
 <br/>

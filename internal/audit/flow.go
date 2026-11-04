@@ -19,6 +19,7 @@ var (
 	shellSet   = regexp.MustCompile(`(?m)(?:^|\s)([A-Za-z_]\w*)=["']?([^\s"';]+)`)
 	envWrite   = regexp.MustCompile(`\b([A-Za-z_]\w*)(?:=|<<)`)
 	envPrintf  = regexp.MustCompile(`printf\s+(?:'[^']*'|"[^"]*")\s+["']?([A-Za-z_]\w*)`)
+	fileName   = regexp.MustCompile(`[\w-]\.[A-Za-z]\w*$`)
 	envExport  = regexp.MustCompile(`exportVariable\(\s*["'\x60]([A-Za-z_]\w*)`)
 	fileWrite  = regexp.MustCompile("(?:>>?|\\btee(?:\\s+-a)?|\\s-o|--output[= ])\\s*[\"']?([^\\s\"';|&<>()]+)|writeFile(?:Sync)?\\(\\s*[\"'`]([^\"'`]+)")
 )
@@ -42,10 +43,19 @@ type tracer struct {
 	memo   map[string]bool
 	files  map[string][]string
 	budget *budget
+	// children keeps called workflows alive: memo keys hold their addresses, which a
+	// freed one would hand to the next.
+	children map[*workflow.Job]*auditor
+	depth    int
 }
 
+// maxTraceDepth stops a chain of references long before the stack would. Real ones
+// are a handful deep, and a stack overflow cannot be recovered from.
+const maxTraceDepth = 2000
+
 func newTracer(events []string, b *budget) *tracer {
-	return &tracer{events: events, memo: map[string]bool{}, files: map[string][]string{}, budget: b}
+	return &tracer{events: events, memo: map[string]bool{}, files: map[string][]string{}, budget: b,
+		children: map[*workflow.Job]*auditor{}}
 }
 
 // once memoizes by key. A key still being computed answers false, which is what
@@ -128,6 +138,21 @@ func describe(p []string) string {
 // ref follows one path. A path that stops early, as in `toJSON(steps)`, covers
 // everything under it.
 func (t *tracer) ref(p []string, w where) bool {
+	t.depth++
+	defer func() { t.depth-- }()
+	if t.depth > maxTraceDepth {
+		t.budget.reason = fmt.Sprintf("a chain of references is more than %d deep", maxTraceDepth)
+	}
+	if t.budget.exceeded() {
+		return false
+	}
+	// `outputs.*` and a computed key cannot be told from the whole object.
+	if i := slices.Index(p, "*"); i >= 0 {
+		p = p[:i]
+	}
+	if len(p) == 0 {
+		return false
+	}
 	if p[0] != "github" && len(p) > 1 && w.a.reg.ScalarOutput.MatchString(p[len(p)-1]) {
 		return false
 	}
@@ -149,17 +174,15 @@ func (t *tracer) ref(p []string, w where) bool {
 		}
 		return t.input(p[1], w)
 	case "matrix":
-		return t.origin(w.job.Strategy["matrix"].Value, w) != ""
+		return t.once(fmt.Sprintf("matrix/%p", w.job), func() bool {
+			return t.origin(w.job.Strategy["matrix"].Value, w) != ""
+		})
 	}
 	return false
 }
 
 func (t *tracer) github(p []string, a *auditor) bool {
-	// `issue[format('body')]` cannot be told from the field, so it counts as the object.
-	if i := slices.Index(p, "*"); i >= 0 {
-		p = p[:i]
-	}
-	if len(p) == 0 || !a.reg.Untrusted.MatchString(strings.Join(p, ".")) {
+	if !a.reg.Untrusted.MatchString(strings.Join(p, ".")) {
 		return false
 	}
 	if len(p) <= 2 && (len(p) == 1 || p[1] == "event") {
@@ -368,6 +391,13 @@ func (t *tracer) tainted(text string, w where) string {
 	}
 	words := nameWords(text)
 	for i := range w.job.Steps[:min(w.idx, len(w.job.Steps))] {
+		if a := unplacedArtifact(w.job.Steps[i]); a && t.step(where{a: w.a, job: w.job, idx: i}) {
+			for _, word := range sortedKeys(words) {
+				if fileName.MatchString(word) {
+					return word
+				}
+			}
+		}
 		for _, f := range t.writtenBy(w.job, i) {
 			if words[f] && t.step(where{a: w.a, job: w.job, idx: i}) {
 				return f
@@ -375,6 +405,12 @@ func (t *tracer) tainted(text string, w where) string {
 		}
 	}
 	return ""
+}
+
+// unplacedArtifact reports an artifact landing in the working directory, where any
+// file a later step names could be one of its files.
+func unplacedArtifact(s workflow.Step) bool {
+	return strings.Contains(strings.ToLower(s.Uses), "actions/download-artifact") && s.With["path"].Value == ""
 }
 
 func (t *tracer) writtenBy(job *workflow.Job, i int) []string {
@@ -453,7 +489,14 @@ func (t *tracer) calledOutput(need *workflow.Job, w where) bool {
 		if child == nil {
 			return false
 		}
+		t.children[need] = child
 		for _, job := range child.wf.Jobs {
+			if job.Uses != "" {
+				if t.calledOutput(job, where{a: child, job: job}) {
+					return true
+				}
+				continue
+			}
 			flat := child.flat(job)
 			for i := range flat.Steps {
 				if t.step(where{a: child, job: flat, idx: i}) {
@@ -541,10 +584,12 @@ func (t *tracer) anyInput(w where) bool {
 	return false
 }
 
+// lookup goes through sorted names so that two spellings of one name, which map
+// order would otherwise pick between, give the same answer every run.
 func lookup(m map[string]workflow.Input, name string) (workflow.Input, bool) {
-	for k, v := range m {
+	for _, k := range sortedKeys(m) {
 		if strings.EqualFold(k, name) {
-			return v, true
+			return m[k], true
 		}
 	}
 	return workflow.Input{}, false

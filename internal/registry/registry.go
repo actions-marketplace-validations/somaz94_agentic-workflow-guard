@@ -3,6 +3,7 @@ package registry
 
 import (
 	_ "embed" // agents.yaml
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -35,6 +36,8 @@ type Match struct {
 // Matches reports whether the value matches.
 func (m Match) Matches(v string) bool { return m.re.MatchString(v) }
 
+var lineComment = regexp.MustCompile(`(?m)^\s*//.*$`)
+
 // RunInput is the input a `run:` agent's script is read through.
 const RunInput = "run"
 
@@ -62,6 +65,7 @@ type Agent struct {
 	LimitedWhenEnv     []Match  `yaml:"limited_when_env"`
 	LimitingDeny       []string `yaml:"limiting_deny"`
 	ConfigFiles        []string `yaml:"config_files"`
+	ConfigKey          string   `yaml:"config_key"`
 	ConfigPattern      string   `yaml:"config_pattern"`
 	config             *regexp.Regexp
 }
@@ -159,15 +163,26 @@ func parse(data []byte) (*Registry, error) {
 // commandStart anchors a run_pattern where a shell starts a command, so a mention
 // in an `echo` or a prompt is not an agent. It also skips the wrappers people put
 // in front of one.
-const commandStart = `(?im)(?:^|[|;&(]|\b(?:if|then|else|do|while|until)\s|!\s)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:timeout|time|exec|nohup|sudo|env)\s+(?:-\S+\s+)*(?:\d+[smh]?\s+)?)*(?:(?:ba|z)?sh\s+-\w*c\s+["']?)?(?:[\w$.{}~/-]*/)?`
+const commandStart = `(?im)(?:^|[|;&(\x60]|\b(?:if|then|else|do|while|until)\s|!\s)\s*` + shellAssign + `*(?:(?:[\w./-]*/)?(?:timeout|time|exec|nohup|sudo|env)\s+(?:-\S+\s+(?:[a-z]\w*\s+)?)*(?:\d+[smh]?\s+)?` + shellAssign + `*)*(?:(?:ba|z)?sh\s+-\w*c\s+["']?)?(?:[\w$.{}~/-]*/)?`
+
+const shellAssign = `(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)`
 
 // shellNoise holds what would hide a command or fake one: comments and the
 // backslash that continues it on the next line.
 var shellNoise = strings.NewReplacer("\\\n", " ")
 
 // NarrowedBy reports whether a committed config restricts what the agent can run.
+// Only the top-level key applies: the same words under another key, or in a comment,
+// say nothing about this run, and a file that does not parse restricts nothing.
 func (a *Agent) NarrowedBy(data []byte) bool {
-	return a.config != nil && a.config.Match(data)
+	if a.config == nil {
+		return false
+	}
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(lineComment.ReplaceAll(data, nil), &doc) != nil {
+		return false
+	}
+	return a.config.Match(doc[a.ConfigKey])
 }
 
 // FindRuns returns every agent a `run:` script starts. One script can start several

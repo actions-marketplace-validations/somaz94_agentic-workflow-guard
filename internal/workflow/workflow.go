@@ -58,6 +58,8 @@ type Job struct {
 	Env         map[string]Input
 	Steps       []Step
 	Line        int
+	// ContinueOnError is true when the job failing does not stop what needs it.
+	ContinueOnError bool
 }
 
 // Workflow is one parsed file.
@@ -174,7 +176,15 @@ func job(key, n *yaml.Node) *Job {
 		Env:         inputs(get(n, "env")),
 		Steps:       parseSteps(get(n, "steps")),
 		Line:        key.Line,
+
+		ContinueOnError: truthyFlag(get(n, "continue-on-error")),
 	}
+}
+
+// truthyFlag counts an expression as set, because it can be at run time.
+func truthyFlag(n *yaml.Node) bool {
+	v := scalar(n)
+	return v != "" && v != "false"
 }
 
 func parseSteps(n *yaml.Node) []Step {
@@ -187,7 +197,6 @@ func parseSteps(n *yaml.Node) []Step {
 		if s.Kind != yaml.MappingNode {
 			continue
 		}
-		coe := scalar(get(s, "continue-on-error"))
 		out = append(out, Step{
 			ID:              scalar(get(s, "id")),
 			Name:            scalar(get(s, "name")),
@@ -197,7 +206,7 @@ func parseSteps(n *yaml.Node) []Step {
 			Line:            s.Line,
 			With:            lowerKeys(inputs(get(s, "with"))),
 			Env:             inputs(get(s, "env")),
-			ContinueOnError: coe != "" && coe != "false",
+			ContinueOnError: truthyFlag(get(s, "continue-on-error")),
 		})
 	}
 	return out
@@ -316,6 +325,30 @@ func defaults(n *yaml.Node) map[string]Input {
 	return out
 }
 
+// withoutAliases writes aliases out in full, because the encoder renders one as
+// `*name` and a reference behind it would not be visible. expanded has already
+// bounded the size. An alias back into its own anchor becomes empty.
+func withoutAliases(n *yaml.Node, open map[*yaml.Node]bool) *yaml.Node {
+	if n.Kind == yaml.AliasNode {
+		if open[n.Alias] {
+			return &yaml.Node{Kind: yaml.ScalarNode}
+		}
+		return withoutAliases(n.Alias, open)
+	}
+	if len(n.Content) == 0 {
+		return n
+	}
+	open[n] = true
+	out := *n
+	out.Anchor = ""
+	out.Content = make([]*yaml.Node, len(n.Content))
+	for i, c := range n.Content {
+		out.Content[i] = withoutAliases(c, open)
+	}
+	delete(open, n)
+	return &out
+}
+
 // inputs flattens a mapping. A non-scalar value keeps its source text so a
 // reference nested inside it is still visible to a scan.
 func inputs(n *yaml.Node) map[string]Input {
@@ -327,7 +360,7 @@ func inputs(n *yaml.Node) map[string]Input {
 		k, v := n.Content[i], deref(n.Content[i+1])
 		val := v.Value
 		if v.Kind != yaml.ScalarNode {
-			if b, err := yaml.Marshal(v); err == nil {
+			if b, err := yaml.Marshal(withoutAliases(v, map[*yaml.Node]bool{})); err == nil {
 				val = string(b)
 			}
 		}

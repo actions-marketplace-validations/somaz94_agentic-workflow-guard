@@ -12,8 +12,8 @@
 #
 # limiting_deny lists the tools a deny list must name for the agent to count as
 # limited whatever else it allows. config_files are committed files that can
-# narrow a wide default, which they do only when config_pattern matches, and the
-# power then drops to scoped and no further.
+# narrow a wide default, which they do only when config_pattern matches the value of
+# their top-level config_key, and the power then drops to scoped and no further.
 agents:
   - id: claude
     uses: [anthropics/claude-code-action]
@@ -134,7 +134,8 @@ agents:
     actor_check: false
     power: broad
     config_files: [opencode.json, opencode.jsonc, .opencode/opencode.json, .opencode/opencode.jsonc]
-    config_pattern: '"permission"\s*:\s*"(?:deny|ask)"|"bash"\s*:\s*(?:"(?:deny|ask)"|\{[^}]*"\*"\s*:\s*"(?:deny|ask)")'
+    config_key: permission
+    config_pattern: '^"(?:deny|ask)"$|"bash"\s*:\s*(?:"(?:deny|ask)"|\{[^}]*"\*"\s*:\s*"(?:deny|ask)")'
     broad_when:
       - {input: run, pattern: '(^|\s)--auto(\s|$)'}
     limited_when_env:
@@ -174,7 +175,7 @@ scalar_output_pattern: '(?i)(^|[_-])(sha|oid|number|num|id|count|size|url|exists
 
 # A needs or steps output named like this can carry an authorization result. Any
 # other output is flow control, and treating it as a gate would hide a finding.
-gate_output_pattern: '(?i)(^|[_-]|is|has|can)(authori[sz]ed?|authz|allowed|trusted|member|collaborator|admin|maintainer|owner|permissions?|fork|internal|approved|gate|proceed|ok)($|[_-])'
+gate_output_pattern: '(?i)(^|[_-]|is|has|can|user|actor)(authori[sz]ed?|authori[sz]ation|authz|allowed|trusted|member|collaborator|admin|maintainer|permissions?|fork|internal|approved|gate|proceed)($|[_-])|^ok$|(auth|authz|perm|access|gate|check)[_-]?ok$|(is|has|can)[_-]?owner$'
 
 # A Bash permission on one of these commands runs arbitrary programs, however
 # narrow it reads: `find -exec`, `xargs`, `env`, an interpreter, a build tool.
