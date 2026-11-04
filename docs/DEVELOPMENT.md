@@ -52,4 +52,4 @@ A command-line agent has a `run_pattern` instead of `uses`, and its inputs read 
 
 ## Release
 
-Releases run through the shared workflow in `somaz94/.github`. `action.yml` uses `image: Dockerfile` until the first release moves it to the published image.
+Releases run through the shared workflow in `somaz94/.github`. `action.yml` pins the published image, so a version's image must exist before its tag does: publish it with `release.yml` through `workflow_dispatch`, move the pin, then push the tag.
