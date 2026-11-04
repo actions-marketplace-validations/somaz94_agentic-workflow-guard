@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.0.1](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.0...v1.0.1) (2026-11-04)
+
+### Bug Fixes
+
+- rename the action to Agentic Workflow Audit for the Marketplace ([8e821a1](https://github.com/somaz94/agentic-workflow-guard/commit/8e821a10ad0d568cbcde32e3057796e069697d9d))
+
+### Chores
+
+- bump the action image to v1.0.1 ([06657e8](https://github.com/somaz94/agentic-workflow-guard/commit/06657e8f99bdff982d662805d665bf5232707d53))
+
+### Contributors
+
+- somaz
+
+<br/>
+
 ## [v1.0.0](https://github.com/somaz94/agentic-workflow-guard/releases/tag/v1.0.0) (2026-11-04)
 
 ### Features
