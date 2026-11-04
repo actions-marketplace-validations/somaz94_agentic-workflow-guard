@@ -177,3 +177,25 @@ func TestCombine(t *testing.T) {
 		t.Error("Combine must take the lowest state")
 	}
 }
+
+func TestRunTimeFacts(t *testing.T) {
+	gate := func(path []string) bool { return path[len(path)-1] == "result" }
+	cases := []struct {
+		src, event string
+		want       State
+	}{
+		{"github.event.pull_request.merged", "pull_request_target", Indeterminate},
+		{"github.event.pull_request.merged == true", "pull_request_target", Indeterminate},
+		{"github.event.workflow_run.pull_requests[0] != null", "workflow_run", None},
+		{"github.event.workflow_run.pull_requests[0].number", "workflow_run", None},
+		{"github.event.workflow_run.pull_requests", "workflow_run", Reachable},
+		{"fromJSON(needs.c.outputs.result).qualified == true", "issues", Indeterminate},
+		{"fromJSON(needs.c.outputs.other).qualified == true", "issues", Reachable},
+	}
+	for _, c := range cases {
+		ctx := Context{Event: c.event, Actions: Actions(c.event, nil), IsGate: gate}
+		if got := Eval(c.src, ctx); got != c.want {
+			t.Errorf("Eval(%q) = %v; want %v", c.src, got, c.want)
+		}
+	}
+}

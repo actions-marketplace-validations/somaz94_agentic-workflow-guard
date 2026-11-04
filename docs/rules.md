@@ -20,6 +20,8 @@ Severity combines how far the actor gets with what the agent can do once they ge
 | Scoped | Tools behind an allowlist or approval | The default for most agents |
 | Broad | Can run arbitrary commands | Auto-approval, a full-access sandbox, `Bash(find:*)` |
 
+A command-line agent in a `run:` step gets the power its tool has when run unattended, read from its flags and settings. It has no actor check of its own, so only a gate on the job or step protects it.
+
 When the only gate is a run-time one that the file cannot prove, such as a job output or an authorization step, the severity drops one level and the message asks you to verify it.
 
 <br/>
@@ -34,7 +36,9 @@ An outsider can start the agent, either because its actor allowlist is `*` or be
 
 ## untrusted-input
 
-A field such as `github.event.issue.body` reaches the agent through `with:` or `env:`, or one step back through a step's output or a file it writes. Moving the text into an environment variable does not help here, because the model reads the content either way.
+A field such as `github.event.issue.body` reaches the agent through `with:`, `env:` or its command line. The text is traced through env, `$GITHUB_ENV`, step and job outputs, the inputs of local reusable workflows and composite actions, and files a step writes. Moving it into an environment variable does not help here, because the model reads the content either way.
+
+A test on the text is not a flow: `contains(github.event.issue.body, 'bug') && 'bug' || 'other'` yields a constant. An output whose name shows it holds an identifier, such as `head_sha` or `number`, does not carry text either.
 
 **Fix**: gate the workflow to trusted actors. If it must serve outsiders, give the agent no tools that can act, and treat its output as untrusted too.
 

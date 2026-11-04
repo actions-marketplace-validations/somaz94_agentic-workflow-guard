@@ -5,6 +5,15 @@
 # case-insensitive regular expression matched against an input's value.
 # read_only_tools lists the tools an allowlist can hold and still count as
 # limited: they read, or they post a comment, and none runs code or approves.
+#
+# run_pattern finds a command-line agent in a `run:` step, and its inputs read the
+# script as `run`. A command has no actor check of its own. Its default power
+# comes from what the tool does unattended, per its documentation.
+#
+# limiting_deny lists the tools a deny list must name for the agent to count as
+# limited whatever else it allows. config_files are committed files that can
+# narrow a wide default: only their presence is read, so the power drops to
+# scoped and no further.
 agents:
   - id: claude
     uses: [anthropics/claude-code-action]
@@ -17,7 +26,8 @@ agents:
     tool_inputs: [claude_args, settings]
     allowlist_input: claude_args
     allow_settings_input: settings
-    read_only_tools:
+    limiting_deny: &claude_limiting_deny [Bash, Write, Edit, MultiEdit, NotebookEdit, WebFetch]
+    read_only_tools: &claude_read_only
       - Read
       - Glob
       - Grep
@@ -69,19 +79,97 @@ agents:
     broad_when:
       - {input: copilot-allow-tools, pattern: '^(\*|all|true)$|shell\(\*\)'}
 
-# Payload fields written by whoever triggered the run. The object name decides
-# which events can carry the field.
+  # Same inputs as claude-code-action, without its actor check.
+  - id: claude-base
+    uses: [anthropics/claude-code-base-action]
+    actor_check: false
+    power: scoped
+    tool_inputs: [claude_args, settings]
+    allowlist_input: claude_args
+    allow_settings_input: settings
+    limiting_deny: *claude_limiting_deny
+    read_only_tools: *claude_read_only
+    broad_when:
+      - {input: claude_args, pattern: '--dangerously-skip-permissions|bypassPermissions'}
+      - {input: settings, pattern: 'bypassPermissions'}
+
+  - id: claude-cli
+    run_pattern: '(?:claude|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*@anthropic-ai/claude-code(?:@\S+)?)\s[^\n]*(?:-p|--print)(?:\s|=|$)'
+    actor_check: false
+    power: scoped
+    tool_inputs: [run]
+    allowlist_input: run
+    limiting_deny: *claude_limiting_deny
+    read_only_tools: *claude_read_only
+    broad_when:
+      - {input: run, pattern: '--dangerously-skip-permissions|bypassPermissions'}
+
+  # `codex exec` runs in a read-only sandbox unless told otherwise.
+  - id: codex-cli
+    run_pattern: '(?:codex|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*@openai/codex(?:@\S+)?)\s(?:[^\n]*\s)?(?:exec|e)(?:\s|$)'
+    actor_check: false
+    power: limited
+    scoped_when:
+      - {input: run, pattern: 'workspace-write|--full-auto|--approve-for-me'}
+    broad_when:
+      - {input: run, pattern: 'danger-full-access|--dangerously-bypass-approvals-and-sandbox|--yolo'}
+
+  - id: gemini-cli
+    run_pattern: '(?:gemini|qwen|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*(?:@google/gemini-cli|@qwen-code/qwen-code)(?:@\S+)?)\s[^\n]*(?:-p|--prompt)(?:\s|=|$)'
+    actor_check: false
+    power: scoped
+    broad_when:
+      - {input: run, pattern: '(^|\s)(--yes|-y|--yolo)(\s|$)|--approval-mode[ =]yolo'}
+
+  - id: copilot-cli
+    run_pattern: '(?:copilot|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*@github/copilot(?:@\S+)?)\s[^\n]*(?:-p|--prompt)(?:\s|=|$)'
+    actor_check: false
+    power: scoped
+    broad_when:
+      - {input: run, pattern: '--allow-all|--yolo'}
+
+  # Most opencode permissions, bash included, default to allow.
+  - id: opencode-cli
+    run_pattern: '(?:opencode|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*opencode-ai(?:@\S+)?)\s+run(?:\s|$)'
+    actor_check: false
+    power: broad
+    config_files: [opencode.json, opencode.jsonc, .opencode/opencode.json, .opencode/opencode.jsonc, .opencode/agent, .opencode/agents]
+    broad_when:
+      - {input: run, pattern: '(^|\s)--auto(\s|$)'}
+    limited_when_env:
+      - {input: OPENCODE_PERMISSION, pattern: '"bash"\s*:\s*\{\s*"\*"\s*:\s*"deny"(?:\s*,\s*"gh (?:(?:issue|pr) (?:view|list|comment|diff|checks)|search \w+)\*?"\s*:\s*"allow")*\s*\}\s*,\s*"webfetch"\s*:\s*"deny"'}
+    scoped_when_env:
+      - {input: OPENCODE_PERMISSION, pattern: '"bash"\s*:\s*(?:"(?:deny|ask)"|\{[^}]*"\*"\s*:\s*"(?:deny|ask)")'}
+
+  - id: aider-cli
+    run_pattern: 'aider\s[^\n]*(?:--message|--message-file|--msg|-m)(?:\s|=)'
+    actor_check: false
+    power: scoped
+    broad_when:
+      - {input: run, pattern: '--yes-always|--auto-test|--test-cmd'}
+
+# Context paths holding text written by whoever triggered the run, matched
+# against the whole path in lower case. The object name decides which events can
+# carry the field. The bare objects cover `toJSON(github.event.issue)`, and `github`
+# itself covers `toJSON(github)`.
 untrusted_contexts:
+  - github
+  - github\.event
+  - github\.event\.(issue|comment|discussion|pull_request|workflow_run)
   - github\.event\.issue\.(title|body)
   - github\.event\.comment\.body
   - github\.event\.discussion\.(title|body)
-  - github\.event\.pull_request\.(title|body|head\.ref|head\.label)
-  - github\.event\.workflow_run\.(head_branch|head_commit\.message)
+  - github\.event\.pull_request\.(title|body|head|head\.ref|head\.label|head\.repo\.default_branch)
+  - github\.event\.workflow_run\.(display_title|head_branch|head_commit|head_commit\.message|head_commit\.author\.(name|email))
   - github\.head_ref
 
 # A prior step matching this pulls attacker-written text in, so an agent reading
 # that step's output or the file it writes is reading the text too.
-untrusted_fetch_pattern: 'github\.event\.(issue|comment|discussion|pull_request)\.(title|body)|github\.event_path|GITHUB_EVENT_PATH|context\.payload\.(issue|comment|discussion|pull_request)|gh (issue|pr) (view|diff)|issues\.get\(|pulls\.get\('
+untrusted_fetch_pattern: 'github\.event_path|GITHUB_EVENT_PATH|context\.payload\.(issue|comment|discussion|pull_request)|gh (issue|pr) (view|diff)|gh api [^\n]*(issues|pulls)/|issues\.(get|listComments)\(|pulls\.(get|listFiles)\('
+
+# An output, env variable or input named like this holds an identifier or a flag,
+# not text, even when the step that set it read attacker-written text along the way.
+scalar_output_pattern: '(?i)(^|[_-])(sha|oid|number|num|id|count|size|url|exists|base_ref)$|^(pr|base|proceed|allowed)$'
 
 # A needs or steps output named like this can carry an authorization result. Any
 # other output is flow control, and treating it as a gate would hide a finding.
@@ -125,7 +213,7 @@ exec_equivalent_commands:
 
 # Prior steps or jobs matching this can enforce authorization at run time, in a
 # way an `if:` does not show. Findings behind one are reported as unverified.
-authorization_pattern: 'author_association|getCollaboratorPermissionLevel|collaborators/|checkMembership|/members/|check-user-permission|check-actor-permission|action-repository-permission'
+authorization_pattern: 'allowed_?[uU]sers|author_association|getCollaboratorPermissionLevel|collaborators/|checkMembership|/members/|check-user-permission|check-actor-permission|action-repository-permission'
 
 # Credential shapes that must never sit in a committed agent config. Matched
 # values are never echoed into a finding.

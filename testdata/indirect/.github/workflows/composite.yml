@@ -1,0 +1,12 @@
+name: Agent inside a local action
+on:
+  pull_request_target:
+permissions:
+  contents: read
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/summarize
+        with:
+          title: ${{ toJSON(github.event.pull_request) }}

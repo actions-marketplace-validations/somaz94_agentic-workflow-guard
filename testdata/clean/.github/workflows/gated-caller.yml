@@ -1,0 +1,12 @@
+name: Gated reusable agent
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+jobs:
+  call:
+    if: github.event.comment.author_association == 'OWNER'
+    uses: ./.github/workflows/gated-called.yml
+    with:
+      text: ${{ github.event.comment.body }}

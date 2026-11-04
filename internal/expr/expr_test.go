@@ -2,6 +2,7 @@ package expr
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -38,7 +39,7 @@ func TestParseShapes(t *testing.T) {
 		{"a.*.name", &Ref{Path: []string{"a", "*", "name"}}},
 		{"a['B'].c", &Ref{Path: []string{"a", "b", "c"}}},
 		{"a[b]", &Ref{Path: []string{"a", "*"}}},
-		{"f().x", &Ref{Path: []string{"*", "x"}}},
+		{"f().x", &Ref{Path: []string{"*", "x"}, Base: &Call{Name: "f"}}},
 		{"!a", &Unary{X: &Ref{Path: []string{"a"}}}},
 		{"always()", &Call{Name: "always"}},
 		{"Contains(a, 'b')", &Call{Name: "contains", Args: []Node{&Ref{Path: []string{"a"}}, &Literal{Kind: LitString, Text: "b"}}}},
@@ -81,5 +82,48 @@ func TestParseErrors(t *testing.T) {
 		if _, err := Parse(src); err == nil {
 			t.Errorf("Parse(%q) succeeded; want error", src)
 		}
+	}
+}
+
+func TestFlows(t *testing.T) {
+	cases := map[string][]string{
+		"a.b":                     {"a.b"},
+		"'x'":                     nil,
+		"!a":                      nil,
+		"a == b":                  nil,
+		"a && b":                  {"b"},
+		"a || b":                  {"a", "b"},
+		"a && b || c":             {"b", "c"},
+		"contains(a, 'x')":        nil,
+		"startsWith(a, b)":        nil,
+		"endsWith(a, b)":          nil,
+		"always()":                nil,
+		"hashFiles(a)":            nil,
+		"format('{0} {1}', a, b)": {"a", "b"},
+		"toJSON(a)":               {"a"},
+		"fromJSON(a).b":           {"a"},
+		"join(a.*.b, ',')":        {"a.*.b"},
+	}
+	for src, want := range cases {
+		n, err := Parse(src)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", src, err)
+		}
+		var got []string
+		for _, p := range Flows(n) {
+			got = append(got, strings.Join(p, "."))
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("Flows(%q) = %v; want %v", src, got, want)
+		}
+	}
+}
+
+func TestParseRefusesAnOverlongExpression(t *testing.T) {
+	if _, err := Parse(strings.Repeat("(", maxLength+1)); err == nil {
+		t.Error("overlong expression accepted")
+	}
+	if _, err := Parse(strings.Repeat("(", maxLength)); err == nil {
+		t.Error("unbalanced expression accepted")
 	}
 }

@@ -30,7 +30,7 @@ INPUT_PATH=testdata/risky INPUT_FAIL_ON=none ./agentic-workflow-guard
 
 ## Layout
 
-The package name is the role: `expr` parses `if:`, `reach` evaluates it for one actor and event, `workflow` loads a file with line numbers, `registry` holds the agent catalog, `audit` applies the rules, `report` renders the output.
+The package name is the role: `expr` parses expressions, `reach` evaluates an `if:` for one actor and event, `workflow` loads a file with line numbers, `registry` holds the agent catalog, `audit` applies the rules, `report` renders the output.
 
 <br/>
 
@@ -40,11 +40,13 @@ Edit [`internal/registry/agents.yaml`](../internal/registry/agents.yaml). Agents
 
 Read the agent action's own `action.yml` before setting `actor_check`: it records whether the action refuses actors without write access, and getting it wrong in either direction misstates every finding for that agent.
 
+A command-line agent has a `run_pattern` instead of `uses`, and its inputs read the script as `run`. Set `power` from what the tool's documentation says it does unattended, since the default differs between tools.
+
 <br/>
 
 ## Fixtures
 
-`testdata/clean` and `testdata/risky` are synthetic workflows that back the CI jobs. `TestFixtures` in `cmd/main_test.go` pins what they produce, and `ci.yml` and `use-action.yml` assert the same counts, so update them together. Never copy a real repository's workflow into a fixture: a finding here would publish that repository's exposure.
+`testdata/clean`, `testdata/risky` and `testdata/indirect` are synthetic workflows that back the CI jobs. `TestFixtures` in `cmd/main_test.go` pins what they produce, and `ci.yml` and `use-action.yml` assert the same counts, so update them together. Never copy a real repository's workflow into a fixture: a finding here would publish that repository's exposure.
 
 <br/>
 

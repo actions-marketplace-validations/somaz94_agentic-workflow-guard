@@ -28,9 +28,11 @@ type Literal struct {
 }
 
 // Ref is a context path such as github.event.issue.title. A `*` segment is a
-// filter and an index with a non-literal key becomes a `*` segment too.
+// filter and an index with a non-literal key becomes a `*` segment too. A
+// property of a function result has Base set and a path starting with `*`.
 type Ref struct {
 	Path []string
+	Base Node
 }
 
 // Unary is `!x`.
@@ -48,6 +50,37 @@ type Binary struct {
 type Call struct {
 	Name string
 	Args []Node
+}
+
+// Flows returns the context paths whose text can reach the value of n. A
+// comparison or a test yields a boolean whatever it reads, and `a && b` yields
+// b unless a is empty, so neither carries the text it looks at.
+func Flows(n Node) [][]string {
+	switch x := n.(type) {
+	case *Ref:
+		if x.Base != nil {
+			return Flows(x.Base)
+		}
+		return [][]string{x.Path}
+	case *Binary:
+		switch x.Op {
+		case "||":
+			return append(Flows(x.L), Flows(x.R)...)
+		case "&&":
+			return Flows(x.R)
+		}
+	case *Call:
+		switch x.Name {
+		case "contains", "startswith", "endswith", "always", "success", "failure", "cancelled", "hashfiles":
+			return nil
+		}
+		var out [][]string
+		for _, a := range x.Args {
+			out = append(out, Flows(a)...)
+		}
+		return out
+	}
+	return nil
 }
 
 // Unwrap returns the expression inside a value that is exactly one `${{ }}`,
@@ -68,8 +101,15 @@ func Unwrap(src string) (inner string, ok bool) {
 	return strings.TrimSpace(body), true
 }
 
+// maxLength is the runner's own limit, which also bounds how deep the recursive
+// parser and everything walking its result can go on a hostile value.
+const maxLength = 21000
+
 // Parse parses one expression, without its `${{ }}` wrapper.
 func Parse(src string) (Node, error) {
+	if len(src) > maxLength {
+		return nil, fmt.Errorf("expression is longer than %d characters", maxLength)
+	}
 	toks, err := lex(src)
 	if err != nil {
 		return nil, err
@@ -302,9 +342,9 @@ func (p *parser) segment() (string, error) {
 // function result, stays an opaque path under `*`.
 func appendRef(n Node, seg string) Node {
 	if r, ok := n.(*Ref); ok {
-		return &Ref{Path: append(r.Path, strings.ToLower(seg))}
+		return &Ref{Path: append(r.Path, strings.ToLower(seg)), Base: r.Base}
 	}
-	return &Ref{Path: []string{"*", strings.ToLower(seg)}}
+	return &Ref{Path: []string{"*", strings.ToLower(seg)}, Base: n}
 }
 
 func (p *parser) primary() (Node, error) {

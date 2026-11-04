@@ -1,0 +1,12 @@
+name: Summarize
+description: Synthetic action that hands its input to a model
+inputs:
+  title:
+    description: Text to summarize
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/ai-inference@v2
+      with:
+        prompt: ${{ inputs.title }}

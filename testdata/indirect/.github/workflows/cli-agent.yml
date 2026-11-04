@@ -1,0 +1,15 @@
+name: Command-line agent fed a chain of steps
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - id: issue
+        run: gh issue view 1 --json body > issue.json
+      - run: jq -r .body issue.json > prompt.md
+      - run: claude -p "$(cat prompt.md)" --dangerously-skip-permissions

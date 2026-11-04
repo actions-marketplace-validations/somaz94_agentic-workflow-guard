@@ -69,6 +69,10 @@ Three things separate this from a text search:
 - **Each agent's own actor check counts.** An agent action that refuses actors without write access stays protected until its allowlist says `*`, so a weak `if:` in front of it is not a finding.
 - **Severity follows what the agent can do.** Text reaching a model with no tools is not the same as text reaching one with `Bash(find:*)`, which runs any program through `-exec`.
 
+- **Text is traced, not searched for.** A value is parsed as an expression, so `contains(github.event.issue.body, 'bug')` carries no text and `toJSON(github.event.issue)` does. From there it follows env, `$GITHUB_ENV`, step and job outputs, inputs and written files, across as many steps as it takes.
+
+Local reusable workflows and composite actions are read and judged with their caller's triggers and gates, and command-line agents started from `run:` steps count like any action.
+
 A gate the workflow only enforces at run time, such as an authorization job whose output decides the next one, cannot be proven from the file. Those findings drop one severity level and ask you to verify the gate.
 
 <br/>
@@ -77,9 +81,11 @@ A gate the workflow only enforces at run time, such as an authorization job whos
 
 This is static analysis, and a clean result is not a proof of safety.
 
-- Agents started from a `run:` step, and compiled GitHub Agentic Workflows, are not detected
-- A called reusable workflow is not followed into its file
-- Text is traced one step back, through a step's output or a file it writes. Longer chains are not followed
+- A reusable workflow or action in another repository is not followed, because reading it would need the network
+- A command-line agent is recognized by its command in a `run:` step, so one behind a script file or a wrapper is not detected
+- Compiled GitHub Agentic Workflows (`.lock.yml`) are skipped: they are generated, and their compiler decides the gating
+- A committed agent config is noticed, not interpreted, so a default it may narrow is reported as scoped rather than broad
+- A step that reads attacker-written text is taken to pass it to all of its outputs, unless an output's name shows it holds an identifier. Files are matched by name
 - `pull_request` and its review events are out of scope: a fork gets no secrets and a read-only token there
 
 <br/>

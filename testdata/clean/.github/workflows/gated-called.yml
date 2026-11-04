@@ -1,0 +1,13 @@
+name: Called behind a gate
+on:
+  workflow_call:
+    inputs:
+      text:
+        type: string
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - run: claude -p "$TEXT"
+        env:
+          TEXT: ${{ inputs.text }}

@@ -27,6 +27,9 @@ make vet         # Run go vet
 - **`internal/reach` is the core.** It evaluates `if:` per event against an actor model instead of matching text. A regex passed one-branch gates and missed the most serious sample in the measurement that shaped this tool (decided 2026-11-03)
 - **`internal/registry/agents.yaml` is data.** A new agent or a renamed input goes there, not in code. `actor_check` must come from the agent action's own `action.yml`
 - **A wrong `Indeterminate` hides findings.** Only an output that can carry an authorization result lowers severity (`gate_output_pattern`, or a producer that authorizes). Treating every output as a gate pushed a full-access agent down to medium in the measurement
+- **Input is traced, not searched for (`internal/audit/flow.go`).** `expr.Flows` keeps only references whose text reaches the value, so a test on a field is no flow and `toJSON(github.event)` is. A new fetch or output shape is data in `agents.yaml` first
+- **`follow.go` reads local files only.** Local reusable workflows and composite actions are judged with the caller's triggers and gates. Following another repository would need the network, so it stays a documented limit
+- **The scanned tree is hostile input.** It can come from a fork, and a short file can expand exponentially through composite actions, reusable calls or YAML aliases, so `budget` in `follow.go` bounds them and reaching a limit fails the scan rather than reporting a partial result as clean. New recursion goes through `tracer.once`, and new regular expressions are compiled once, never from scanned text
 - **Write permissions only raise severity.** They appear on nearly every agent workflow, so they are never a finding alone
 - **LLM output interpolated into `run:` is out of scope** because zizmor's `template-injection` already reports it. Do not add a rule that duplicates a general linter
 

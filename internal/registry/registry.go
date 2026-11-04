@@ -35,10 +35,15 @@ type Match struct {
 // Matches reports whether the value matches.
 func (m Match) Matches(v string) bool { return m.re.MatchString(v) }
 
-// Agent describes one agent action.
+// RunInput is the input a `run:` agent's script is read through.
+const RunInput = "run"
+
+// Agent describes one agent action or command-line agent.
 type Agent struct {
 	ID                 string   `yaml:"id"`
 	Uses               []string `yaml:"uses"`
+	RunPattern         string   `yaml:"run_pattern"`
+	run                *regexp.Regexp
 	ActorCheck         bool     `yaml:"actor_check"`
 	PowerName          string   `yaml:"power"`
 	WildcardInputs     []string `yaml:"wildcard_inputs"`
@@ -53,6 +58,10 @@ type Agent struct {
 	ScopedWhen         []Match  `yaml:"scoped_when"`
 	BroadWhen          []Match  `yaml:"broad_when"`
 	BroadWhenEnv       []Match  `yaml:"broad_when_env"`
+	ScopedWhenEnv      []Match  `yaml:"scoped_when_env"`
+	LimitedWhenEnv     []Match  `yaml:"limited_when_env"`
+	LimitingDeny       []string `yaml:"limiting_deny"`
+	ConfigFiles        []string `yaml:"config_files"`
 }
 
 // DefaultPower is the agent's capability before its inputs are read.
@@ -68,13 +77,15 @@ func (a *Agent) DefaultPower() Power {
 
 // Registry is the loaded catalog.
 type Registry struct {
-	Agents         []*Agent
+	Agents []*Agent
+	// Untrusted matches a whole context path holding attacker-written text.
 	Untrusted      *regexp.Regexp
 	ExecCommands   map[string]bool
 	Authorization  *regexp.Regexp
 	Secret         *regexp.Regexp
 	UntrustedFetch *regexp.Regexp
 	GateOutput     *regexp.Regexp
+	ScalarOutput   *regexp.Regexp
 }
 
 // Load parses the embedded catalog.
@@ -91,6 +102,7 @@ func parse(data []byte) (*Registry, error) {
 		Secret    string   `yaml:"secret_pattern"`
 		Fetch     string   `yaml:"untrusted_fetch_pattern"`
 		Gate      string   `yaml:"gate_output_pattern"`
+		Scalar    string   `yaml:"scalar_output_pattern"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parse registry: %w", err)
@@ -100,7 +112,7 @@ func parse(data []byte) (*Registry, error) {
 		r.ExecCommands[c] = true
 	}
 	var err error
-	if r.Untrusted, err = regexp.Compile(`\$\{\{(?:[^}]|\}[^}])*?\b(` + strings.Join(raw.Untrusted, "|") + `)\b(?:[^}]|\}[^}])*?\}\}`); err != nil {
+	if r.Untrusted, err = regexp.Compile(`^(` + strings.Join(raw.Untrusted, "|") + `)$`); err != nil {
 		return nil, fmt.Errorf("untrusted_contexts: %w", err)
 	}
 	if r.Authorization, err = regexp.Compile(raw.Authz); err != nil {
@@ -115,8 +127,16 @@ func parse(data []byte) (*Registry, error) {
 	if r.GateOutput, err = regexp.Compile(raw.Gate); err != nil {
 		return nil, fmt.Errorf("gate_output_pattern: %w", err)
 	}
+	if r.ScalarOutput, err = regexp.Compile(raw.Scalar); err != nil {
+		return nil, fmt.Errorf("scalar_output_pattern: %w", err)
+	}
 	for _, a := range r.Agents {
-		for _, set := range [][]Match{a.LimitedWhen, a.ScopedWhen, a.BroadWhen, a.BroadWhenEnv} {
+		if a.RunPattern != "" {
+			if a.run, err = regexp.Compile(commandStart + `(?:` + a.RunPattern + `)`); err != nil {
+				return nil, fmt.Errorf("agent %s run_pattern: %w", a.ID, err)
+			}
+		}
+		for _, set := range [][]Match{a.LimitedWhen, a.ScopedWhen, a.BroadWhen, a.BroadWhenEnv, a.ScopedWhenEnv, a.LimitedWhenEnv} {
 			for i := range set {
 				re, err := regexp.Compile("(?i)" + set[i].Pattern)
 				if err != nil {
@@ -127,6 +147,35 @@ func parse(data []byte) (*Registry, error) {
 		}
 	}
 	return r, nil
+}
+
+// commandStart anchors a run_pattern where a shell starts a command, so a mention
+// in an `echo` or a prompt is not an agent. It also skips the wrappers people put
+// in front of one.
+const commandStart = `(?im)(?:^|[|;&(]|\b(?:if|then|else|do|while|until)\s|!\s)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:timeout|time|exec|nohup|sudo|env)\s+(?:-\S+\s+)*(?:\d+[smh]?\s+)?)*`
+
+// shellNoise holds what would hide a command or fake one: comments and the
+// backslash that continues it on the next line.
+var shellNoise = strings.NewReplacer("\\\n", " ")
+
+// FindRun returns the agent a `run:` script starts, nil when none.
+func (r *Registry) FindRun(script string) *Agent {
+	if script == "" {
+		return nil
+	}
+	var kept []string
+	for _, line := range strings.Split(shellNoise.Replace(script), "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+			kept = append(kept, line)
+		}
+	}
+	text := strings.Join(kept, "\n")
+	for _, a := range r.Agents {
+		if a.run != nil && a.run.MatchString(text) {
+			return a
+		}
+	}
+	return nil
 }
 
 // Find returns the agent behind a `uses:` value, ignoring its ref and subpath.

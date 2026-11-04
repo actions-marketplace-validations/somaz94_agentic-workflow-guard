@@ -1,7 +1,10 @@
 package workflow
 
 import (
+	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -179,5 +182,57 @@ func TestParseErrors(t *testing.T) {
 		if _, err := Parse([]byte(src)); err == nil {
 			t.Errorf("Parse(%q) succeeded; want error", src)
 		}
+	}
+}
+
+func TestParseReusableJob(t *testing.T) {
+	w, err := Parse([]byte("on:\n  workflow_call:\n    inputs:\n      text: {type: string, default: hi}\n      bare: {type: string}\njobs:\n  a:\n    uses: ./.github/workflows/x.yml\n    with:\n      k: v\n    outputs:\n      o: ${{ steps.s.outputs.o }}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.CallInputs["text"].Value != "hi" || w.CallInputs["bare"].Value != "" {
+		t.Errorf("call inputs = %+v", w.CallInputs)
+	}
+	j := w.JobByName("A")
+	if j == nil || j.Uses != "./.github/workflows/x.yml" || j.With["k"].Value != "v" || j.Outputs["o"].Value == "" {
+		t.Errorf("job = %+v", j)
+	}
+}
+
+func TestParseAction(t *testing.T) {
+	a, err := ParseAction([]byte("inputs:\n  p: {default: d}\nruns:\n  using: composite\n  steps:\n    - run: echo\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Inputs["p"].Value != "d" || len(a.Steps) != 1 {
+		t.Errorf("action = %+v", a)
+	}
+	if a, err = ParseAction([]byte("runs:\n  using: docker\n")); err != nil || len(a.Steps) != 0 {
+		t.Errorf("docker action = %+v, %v", a, err)
+	}
+	for _, src := range []string{"a: [", "- list"} {
+		if _, err := ParseAction([]byte(src)); err == nil {
+			t.Errorf("ParseAction(%q) succeeded", src)
+		}
+	}
+}
+
+func TestAliasExpansionIsBounded(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("x: &big {a: \"" + strings.Repeat("a", 500_000) + "\"}\nenv:\n")
+	for i := 0; i < 50; i++ {
+		fmt.Fprintf(&b, "  k%d: *big\n", i)
+	}
+	if _, err := Parse([]byte(b.String())); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("Parse err = %v", err)
+	}
+	if _, err := ParseAction([]byte(b.String())); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("ParseAction err = %v", err)
+	}
+	if _, err := Parse([]byte("a: &a\n  b: *a\non: push\n")); err != nil {
+		t.Errorf("self-referencing anchor: %v", err)
+	}
+	if _, err := Parse([]byte("x: &e {K: v}\nenv: *e\non: push\njobs: {}\n")); err != nil {
+		t.Errorf("ordinary anchor: %v", err)
 	}
 }

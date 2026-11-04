@@ -29,6 +29,52 @@ func TestLoadAndFind(t *testing.T) {
 	}
 }
 
+func TestFindRun(t *testing.T) {
+	r, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{
+		`claude -p "$PROMPT"`:                                 "claude-cli",
+		"claude --model x --print hello":                      "claude-cli",
+		"claude \\\n  --model x \\\n  -p hello":               "claude-cli",
+		"npx -y @anthropic-ai/claude-code@2 -p hi":            "claude-cli",
+		`out=$(claude -p "x")`:                                "claude-cli",
+		"cat f | claude -p":                                   "claude-cli",
+		"if claude -p x; then echo; fi":                       "claude-cli",
+		"FOO=bar claude -p x":                                 "claude-cli",
+		"timeout 100s qwen -p x":                              "gemini-cli",
+		"gemini --yolo --prompt x":                            "gemini-cli",
+		"npx @google/gemini-cli -p x":                         "gemini-cli",
+		"codex exec x":                                        "codex-cli",
+		"cat d | codex --ask-for-approval never exec \\\n  -": "codex-cli",
+		`copilot -p "$(cat p.md)"`:                            "copilot-cli",
+		"opencode run x":                                      "opencode-cli",
+		"aider --model m --message x":                         "aider-cli",
+	}
+	for script, id := range cases {
+		a := r.FindRun(script)
+		if a == nil || a.ID != id {
+			t.Errorf("FindRun(%q) = %+v; want %s", script, a, id)
+		}
+	}
+	for _, script := range []string{
+		"",
+		"claude --version",
+		"codex --version",
+		"npm install -g @anthropic-ai/claude-code",
+		`echo "claude -p x"`,
+		"# claude -p x",
+		"python3 -m unittest discover -s tests/claude -p 'test_codex_build.py'",
+		"aider --version",
+		"./claude-wrapper -p x",
+	} {
+		if a := r.FindRun(script); a != nil {
+			t.Errorf("FindRun(%q) = %s; want none", script, a.ID)
+		}
+	}
+}
+
 func TestPowerDefaults(t *testing.T) {
 	cases := map[string]Power{"limited": Limited, "broad": Broad, "scoped": Scoped, "": Scoped}
 	for name, want := range cases {
@@ -44,19 +90,24 @@ func TestUntrustedPattern(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range []string{
-		"Title: ${{ github.event.issue.title }}",
-		"${{github.event.comment.body}}",
-		"${{ format('{0}', github.event.pull_request.body) }}",
-		"${{ github.head_ref }}",
+		"github",
+		"github.event",
+		"github.event.issue",
+		"github.event.issue.title",
+		"github.event.comment.body",
+		"github.event.pull_request.body",
+		"github.event.workflow_run.display_title",
+		"github.head_ref",
 	} {
 		if !r.Untrusted.MatchString(s) {
 			t.Errorf("%q should be untrusted", s)
 		}
 	}
 	for _, s := range []string{
-		"${{ github.event.issue.number }}",
-		"github.event.issue.title without a template",
-		"${{ github.event.pull_request.head.sha }}",
+		"github.event.issue.number",
+		"github.event.pull_request.head.sha",
+		"github.event.issue.title.extra",
+		"xgithub.event",
 	} {
 		if r.Untrusted.MatchString(s) {
 			t.Errorf("%q should not be untrusted", s)
@@ -72,7 +123,9 @@ func TestParseErrors(t *testing.T) {
 		"secret_pattern: '('",
 		"untrusted_fetch_pattern: '('",
 		"gate_output_pattern: '('",
+		"scalar_output_pattern: '('",
 		"agents: [{id: a, broad_when: [{input: b, pattern: '('}]}]",
+		"agents: [{id: a, run_pattern: '('}]",
 	}
 	for _, src := range cases {
 		if _, err := parse([]byte(src)); err == nil {

@@ -1,0 +1,22 @@
+name: Text through a job output
+on:
+  issues:
+    types: [opened]
+permissions: {}
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    outputs:
+      body: ${{ steps.read.outputs.body }}
+    steps:
+      - id: read
+        env:
+          BODY: ${{ github.event.issue.body }}
+        run: printf 'body=%s\n' "$BODY" >> "$GITHUB_OUTPUT"
+  summarize:
+    needs: fetch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/ai-inference@v2
+        with:
+          prompt: ${{ needs.fetch.outputs.body }}

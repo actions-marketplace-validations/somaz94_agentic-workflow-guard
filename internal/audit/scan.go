@@ -1,9 +1,11 @@
 package audit
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 
@@ -42,18 +44,42 @@ func Scan(reg *registry.Registry, root string, ignore []string) (*Report, error)
 	if !info.IsDir() {
 		return nil, fmt.Errorf("scan path %s is not a directory", root)
 	}
+	// The tree can come from a fork, and os.Root refuses a symlink out of it.
+	repo, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, fmt.Errorf("scan path: %w", err)
+	}
+	defer func() { _ = repo.Close() }()
 	r := &Report{}
-	entries, err := os.ReadDir(filepath.Join(root, ".github", "workflows"))
-	if err != nil && !os.IsNotExist(err) {
+	warn := func(m string) { r.Warnings = append(r.Warnings, m) }
+	b := newBudget()
+	read := func(rel string) ([]byte, error) {
+		info, err := repo.Stat(rel)
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("%s is not a regular file", rel)
+		}
+		if info.Size() > maxFileSize {
+			b.reason = fmt.Sprintf("%s is larger than %d bytes", rel, maxFileSize)
+			return nil, b.limitError()
+		}
+		return repo.ReadFile(rel)
+	}
+	entries, err := fs.ReadDir(repo.FS(), ".github/workflows")
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("read workflows: %w", err)
 	}
 	for _, e := range entries {
-		ext := filepath.Ext(e.Name())
-		if e.IsDir() || (ext != ".yml" && ext != ".yaml") {
+		ext := path.Ext(e.Name())
+		// A `.lock.yml` is compiled by GitHub Agentic Workflows: nobody can fix a
+		// finding in it, and that compiler decides its own gating.
+		if e.IsDir() || (ext != ".yml" && ext != ".yaml") || strings.HasSuffix(e.Name(), ".lock.yml") {
 			continue
 		}
-		rel := filepath.ToSlash(filepath.Join(".github", "workflows", e.Name()))
-		data, err := os.ReadFile(filepath.Join(root, rel))
+		rel := ".github/workflows/" + e.Name()
+		data, err := read(rel)
 		if err != nil {
 			r.Warnings = append(r.Warnings, fmt.Sprintf("%s: %v", rel, err))
 			continue
@@ -61,13 +87,19 @@ func Scan(reg *registry.Registry, root string, ignore []string) (*Report, error)
 		r.Files++
 		wf, err := workflow.Parse(data)
 		if err != nil {
+			b.noteParse(rel, err)
 			r.Warnings = append(r.Warnings, fmt.Sprintf("%s: %v", rel, err))
 			continue
 		}
-		r.Findings = append(r.Findings, Workflow(reg, rel, wf)...)
+		a := newAuditor(reg, read, rel, wf, nil, warn)
+		a.budget = b
+		r.Findings = append(r.Findings, a.run()...)
+	}
+	if b.exceeded() {
+		return nil, b.limitError()
 	}
 	for _, c := range configFiles {
-		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(c.path)))
+		data, err := read(c.path)
 		if err != nil {
 			continue
 		}
@@ -80,8 +112,32 @@ func Scan(reg *registry.Registry, root string, ignore []string) (*Report, error)
 		r.Findings = append(r.Findings, found...)
 	}
 	r.Findings = filter(r.Findings, ignore)
+	if b.exceeded() {
+		return nil, b.limitError()
+	}
 	sortFindings(r.Findings)
+	r.Findings = dedupe(r.Findings)
 	return r, nil
+}
+
+func (b *budget) limitError() error {
+	return fmt.Errorf("scan stopped, its result would be incomplete: %s", b.reason)
+}
+
+// dedupe keeps the worst report of each location: a workflow audited by itself
+// and again through a caller reports the same step twice. Findings are sorted, so
+// the first seen is the worst.
+func dedupe(in []Finding) []Finding {
+	seen := map[string]bool{}
+	out := in[:0]
+	for _, f := range in {
+		key := fmt.Sprintf("%s/%s/%d", f.Rule, f.File, f.Line)
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func filter(in []Finding, ignore []string) []Finding {

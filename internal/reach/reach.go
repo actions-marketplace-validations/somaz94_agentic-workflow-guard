@@ -49,8 +49,9 @@ type Context struct {
 	Event   string
 	Actions []string
 	Actor   Actor
-	// IsGate reports whether a needs or steps output could enforce authorization.
-	// Others are ordinary flow control and gate nothing. Nil treats all as gates.
+	// IsGate reports whether a needs or steps output, or a reusable workflow's
+	// input, could enforce authorization. Others are ordinary flow control and
+	// gate nothing. Nil treats all as gates.
 	IsGate func(path []string) bool
 }
 
@@ -260,6 +261,9 @@ func (e *evaluator) eval(n expr.Node) value {
 		}
 		return str(x.Text)
 	case *expr.Ref:
+		if x.Base != nil {
+			return value{kind: kFree, uncertain: e.eval(x.Base).uncertain}
+		}
 		return e.resolve(x.Path)
 	case *expr.Unary:
 		v := e.eval(x.X)
@@ -491,7 +495,7 @@ func (e *evaluator) resolve(path []string) value {
 			return e.resolveEvent(path[2:])
 		}
 		return value{kind: kFree}
-	case "needs", "steps":
+	case "needs", "steps", "inputs":
 		if e.ctx.IsGate != nil && !e.ctx.IsGate(path) {
 			return value{kind: kFree}
 		}
@@ -592,6 +596,16 @@ func (e *evaluator) resolveObject(rest []string, ownedByActor bool) value {
 		return value{kind: kFree}
 	case rest[0] == "pull_request" && field == "head.repo.fork":
 		return boolean(true, false)
+	case rest[0] == "pull_request" && field == "merged":
+		// A maintainer merged it, which is a review of a kind but not one of this text.
+		out := boolean(true, true)
+		out.uncertain = true
+		return out
+	case rest[0] == "workflow_run" && field == "pull_requests":
+		// GitHub leaves this empty for a pull request from a fork.
+		return value{kind: kArray}
+	case rest[0] == "workflow_run" && strings.HasPrefix(field, "pull_requests."):
+		return null()
 	case rest[0] == "pull_request" && (field == "head.repo.full_name" || field == "head.repo.owner.login" || field == "head.user.login"):
 		return value{kind: kIdentity}
 	case rest[0] == "workflow_run" && (field == "head_repository.full_name" || field == "head_repository.owner.login"):

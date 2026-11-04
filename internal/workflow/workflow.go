@@ -2,11 +2,20 @@
 package workflow
 
 import (
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
+
+// ErrTooLarge reports a file whose aliases expand past what a scan will hold.
+var ErrTooLarge = errors.New("file expands to too much text through its YAML aliases")
+
+// maxExpanded bounds a file once its aliases are counted, because each alias is
+// rendered or scanned in full and a short file can name a large anchor many times.
+const maxExpanded = 16 << 20
 
 // Permissions is a resolved `permissions:` block.
 type Permissions struct {
@@ -34,11 +43,14 @@ type Step struct {
 	Env  map[string]Input
 }
 
-// Job is one job. A job that calls a reusable workflow has no steps.
+// Job is one job. A job that calls a reusable workflow has Uses and no steps.
 type Job struct {
 	Name        string
 	If          string
 	Needs       []string
+	Uses        string
+	With        map[string]Input
+	Outputs     map[string]Input
 	Permissions Permissions
 	Env         map[string]Input
 	Steps       []Step
@@ -48,16 +60,26 @@ type Job struct {
 // Workflow is one parsed file.
 type Workflow struct {
 	// Triggers maps each event to its `types:`, empty when none are listed.
-	Triggers    map[string][]string
+	Triggers map[string][]string
+	// CallInputs maps each `workflow_call` input to its default.
+	CallInputs  map[string]Input
 	Permissions Permissions
 	Env         map[string]Input
 	Jobs        []*Job
 }
 
-// JobByName finds a job, nil when absent.
+// Action is a parsed `action.yml`. Only a composite action has steps.
+type Action struct {
+	// Inputs maps each input to its default.
+	Inputs map[string]Input
+	Steps  []Step
+}
+
+// JobByName finds a job, nil when absent. Expressions match job names without
+// regard to case.
 func (w *Workflow) JobByName(name string) *Job {
 	for _, j := range w.Jobs {
-		if j.Name == name {
+		if strings.EqualFold(j.Name, name) {
 			return j
 		}
 	}
@@ -73,9 +95,13 @@ func Parse(data []byte) (*Workflow, error) {
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("not a workflow: top level is not a mapping")
 	}
+	if expanded(&doc, map[*yaml.Node]int64{}) > maxExpanded {
+		return nil, ErrTooLarge
+	}
 	root := doc.Content[0]
 	w := &Workflow{
 		Triggers:    triggers(get(root, "on")),
+		CallInputs:  defaults(get(get(get(root, "on"), "workflow_call"), "inputs")),
 		Permissions: permissions(get(root, "permissions")),
 		Env:         inputs(get(root, "env")),
 	}
@@ -91,27 +117,70 @@ func Parse(data []byte) (*Workflow, error) {
 	return w, nil
 }
 
+// expanded sums the text under a node with aliases counted each time they appear.
+// A node seen on the way down counts as nothing, which ends a self-reference.
+func expanded(n *yaml.Node, memo map[*yaml.Node]int64) int64 {
+	if v, ok := memo[n]; ok {
+		return v
+	}
+	memo[n] = 0
+	size := int64(len(n.Value))
+	if n.Alias != nil {
+		size += expanded(n.Alias, memo)
+	}
+	for _, c := range n.Content {
+		if size += expanded(c, memo); size > maxExpanded {
+			break
+		}
+	}
+	memo[n] = size
+	return size
+}
+
+// ParseAction reads an `action.yml`.
+func ParseAction(data []byte) (*Action, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parse yaml: %w", err)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("not an action: top level is not a mapping")
+	}
+	if expanded(&doc, map[*yaml.Node]int64{}) > maxExpanded {
+		return nil, ErrTooLarge
+	}
+	root := doc.Content[0]
+	return &Action{Inputs: defaults(get(root, "inputs")), Steps: parseSteps(get(get(root, "runs"), "steps"))}, nil
+}
+
 func job(key, n *yaml.Node) *Job {
 	if n.Kind != yaml.MappingNode {
 		return nil
 	}
-	j := &Job{
+	return &Job{
 		Name:        key.Value,
 		If:          scalar(get(n, "if")),
 		Needs:       list(get(n, "needs")),
+		Uses:        scalar(get(n, "uses")),
+		With:        inputs(get(n, "with")),
+		Outputs:     inputs(get(n, "outputs")),
 		Permissions: permissions(get(n, "permissions")),
 		Env:         inputs(get(n, "env")),
+		Steps:       parseSteps(get(n, "steps")),
 		Line:        key.Line,
 	}
-	steps := get(n, "steps")
-	if steps == nil || steps.Kind != yaml.SequenceNode {
-		return j
+}
+
+func parseSteps(n *yaml.Node) []Step {
+	if n == nil || n.Kind != yaml.SequenceNode {
+		return nil
 	}
-	for _, s := range steps.Content {
+	var out []Step
+	for _, s := range n.Content {
 		if s.Kind != yaml.MappingNode {
 			continue
 		}
-		j.Steps = append(j.Steps, Step{
+		out = append(out, Step{
 			ID:   scalar(get(s, "id")),
 			Name: scalar(get(s, "name")),
 			Uses: scalar(get(s, "uses")),
@@ -122,7 +191,7 @@ func job(key, n *yaml.Node) *Job {
 			Env:  inputs(get(s, "env")),
 		})
 	}
-	return j
+	return out
 }
 
 // get resolves one mapping key, following aliases. YAML 1.1 readers turn a bare
@@ -210,6 +279,19 @@ func permissions(n *yaml.Node) Permissions {
 		sort.Strings(p.Writes)
 	}
 	return p
+}
+
+// defaults reads an `inputs:` declaration, keeping each input's default.
+func defaults(n *yaml.Node) map[string]Input {
+	if n == nil || n.Kind != yaml.MappingNode {
+		return nil
+	}
+	out := make(map[string]Input, len(n.Content)/2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k := n.Content[i]
+		out[k.Value] = Input{Value: scalar(get(deref(n.Content[i+1]), "default")), Line: k.Line}
+	}
+	return out
 }
 
 // inputs flattens a mapping. A non-scalar value keeps its source text so a

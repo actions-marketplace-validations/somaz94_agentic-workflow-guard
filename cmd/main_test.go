@@ -92,6 +92,9 @@ func TestFixtures(t *testing.T) {
 		{"../testdata/risky", "high=5"},
 		{"../testdata/risky", "medium=3"},
 		{"../testdata/risky", "low=1"},
+		{"../testdata/indirect", "high=2"},
+		{"../testdata/indirect", "medium=1"},
+		{"../testdata/indirect", "low=2"},
 	}
 	for _, c := range cases {
 		_, out := setup(t, "none")
