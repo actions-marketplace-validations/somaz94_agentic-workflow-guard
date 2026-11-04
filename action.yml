@@ -43,7 +43,7 @@ runs:
   # A published image starts in seconds instead of building on every run. Subtle:
   # this version's image must be published (release.yml workflow_dispatch) before
   # its git tag is pushed, and a runner can pull only the pushed platforms.
-  image: docker://ghcr.io/somaz94/agentic-workflow-guard:v1.0.0
+  image: docker://ghcr.io/somaz94/agentic-workflow-guard:v1.0.1
   env:
     INPUT_PATH: ${{ inputs.path }}
     INPUT_FAIL_ON: ${{ inputs.fail_on }}
