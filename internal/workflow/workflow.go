@@ -47,13 +47,15 @@ type Step struct {
 
 // Job is one job. A job that calls a reusable workflow has Uses and no steps.
 type Job struct {
-	Name        string
-	If          string
-	Needs       []string
-	Uses        string
-	With        map[string]Input
-	Outputs     map[string]Input
-	Strategy    map[string]Input
+	Name     string
+	If       string
+	Needs    []string
+	Uses     string
+	With     map[string]Input
+	Outputs  map[string]Input
+	Strategy map[string]Input
+	// Environment names a deployment environment, which can require an approval.
+	Environment string
 	Permissions Permissions
 	Env         map[string]Input
 	Steps       []Step
@@ -64,6 +66,10 @@ type Job struct {
 
 // Workflow is one parsed file.
 type Workflow struct {
+	// Name is what another workflow's `workflow_run` trigger refers to it by.
+	Name string
+	// RunSources lists the workflows a `workflow_run` trigger follows.
+	RunSources []string
 	// Triggers maps each event to its `types:`, empty when none are listed.
 	Triggers map[string][]string
 	// CallInputs maps each `workflow_call` input to its default.
@@ -105,6 +111,8 @@ func Parse(data []byte) (*Workflow, error) {
 	}
 	root := doc.Content[0]
 	w := &Workflow{
+		Name:        scalar(get(root, "name")),
+		RunSources:  list(get(get(get(root, "on"), "workflow_run"), "workflows")),
 		Triggers:    triggers(get(root, "on")),
 		CallInputs:  defaults(get(get(get(root, "on"), "workflow_call"), "inputs")),
 		Permissions: permissions(get(root, "permissions")),
@@ -172,6 +180,7 @@ func job(key, n *yaml.Node) *Job {
 		With:        lowerKeys(inputs(get(n, "with"))),
 		Outputs:     inputs(get(n, "outputs")),
 		Strategy:    inputs(get(n, "strategy")),
+		Environment: environment(get(n, "environment")),
 		Permissions: permissions(get(n, "permissions")),
 		Env:         inputs(get(n, "env")),
 		Steps:       parseSteps(get(n, "steps")),
@@ -179,6 +188,14 @@ func job(key, n *yaml.Node) *Job {
 
 		ContinueOnError: truthyFlag(get(n, "continue-on-error")),
 	}
+}
+
+// environment reads both forms, `environment: name` and `environment: {name: x}`.
+func environment(n *yaml.Node) string {
+	if n != nil && n.Kind == yaml.MappingNode {
+		return scalar(get(n, "name"))
+	}
+	return scalar(n)
 }
 
 // truthyFlag counts an expression as set, because it can be at run time.

@@ -84,8 +84,9 @@ This is static analysis, and a clean result is not a proof of safety.
 - A reusable workflow or action in another repository is not followed, because reading it would need the network
 - A command-line agent is recognized by its command in a `run:` step, so one behind a script file or an unusual wrapper is not detected
 - Compiled GitHub Agentic Workflows (a `.lock.yml` next to its `.md` source) are skipped: they are generated, and their compiler decides the gating
-- A committed agent config is read only for a pattern that restricts it, and per-agent config files are not read, so a wide default may be overstated
+- A committed agent config is read only for a pattern that restricts it, and per-agent config files and permissions built at run time are not read, so a wide default may be overstated
 - An authorization check is recognized from what a step mentions, so a mention that decides nothing can lower a severity by one level
+- A job's `environment:` is treated as a possible approval gate, because the rules behind it are not in the file
 - `issues` events of type `labeled` are treated as needing triage rights, even though an issue form can apply a label for anyone
 - A step that reads attacker-written text is taken to pass it to all of its outputs, unless an output's name shows it holds an identifier. Files are matched by name
 - `pull_request` and its review events are out of scope: a fork gets no secrets and a read-only token there

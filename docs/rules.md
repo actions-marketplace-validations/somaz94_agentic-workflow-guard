@@ -22,7 +22,7 @@ Severity combines how far the actor gets with what the agent can do once they ge
 
 A command-line agent in a `run:` step gets the power its tool has when run unattended, read from its flags and settings. It has no actor check of its own, so only a gate on the job or step protects it.
 
-When the only gate is a run-time one that the file cannot prove, such as a job output, an authorization step or a required pull request label, the severity drops one level and the message asks you to verify it. A label counts here because it stays on the pull request: a maintainer adds it once, and the author's next push runs with it in place.
+When the only gate is a run-time one that the file cannot prove, such as a job output, an authorization step, a deployment environment or a required pull request label, the severity drops one level and the message asks you to verify it. A label counts here because it stays on the pull request: a maintainer adds it once, and the author's next push runs with it in place.
 
 <br/>
 

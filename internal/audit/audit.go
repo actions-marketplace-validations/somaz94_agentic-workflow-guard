@@ -71,6 +71,7 @@ type auditor struct {
 	call   *callSite
 	warn   func(string)
 	budget *budget
+	repo   *repoFacts
 	// authorized remembers each step's answer: one `if:` can ask about a whole job
 	// many times over.
 	authorized map[*workflow.Job]map[int]bool
@@ -80,7 +81,7 @@ type auditor struct {
 }
 
 func newAuditor(reg *registry.Registry, src Source, file string, wf *workflow.Workflow, call *callSite, warn func(string)) *auditor {
-	return &auditor{reg: reg, file: file, wf: wf, src: src, call: call, warn: warn, budget: newBudget(),
+	return &auditor{reg: reg, file: file, wf: wf, src: src, call: call, warn: warn, budget: newBudget(), repo: &repoFacts{},
 		authorized: map[*workflow.Job]map[int]bool{},
 		flats:      map[*workflow.Job]*workflow.Job{}, frames: map[*workflow.Job][]*frame{}}
 }
@@ -143,7 +144,10 @@ func (a *auditor) exposure(job *workflow.Job, idx int) exposure {
 		if len(actions) == 0 {
 			continue
 		}
-		ctx := reach.Context{Event: event, Actions: actions, IsGate: a.gateOutput(job, idx)}
+		if event == "workflow_run" && !a.runSourcesOpen() {
+			continue
+		}
+		ctx := reach.Context{Event: event, Actions: actions, IsGate: a.gateOutput(job, idx), Repo: a.repo.name}
 		s := a.stepState(job, idx, ctx)
 		contributor := false
 		if s == reach.None {
@@ -222,6 +226,10 @@ func (a *auditor) stepState(job *workflow.Job, idx int, ctx reach.Context) reach
 
 func (a *auditor) jobState(job *workflow.Job, ctx reach.Context, seen map[string]bool) reach.State {
 	s := reach.Eval(job.If, ctx)
+	// An environment can require an approval, which the file does not show.
+	if job.Environment != "" {
+		s = reach.Combine(s, reach.Indeterminate)
+	}
 	if seen[job.Name] {
 		return s
 	}
@@ -685,7 +693,7 @@ func Power(reg *registry.Registry, agent *registry.Agent, st workflow.Step) regi
 	bypass := matchesAny(agent.BroadWhen, st.With) || matchesAny(agent.BroadWhenEnv, st.Env)
 	limited := (matchesAny(agent.LimitedWhen, st.With) && !bypass) || matchesAny(agent.LimitedWhenEnv, st.Env) ||
 		(readOnlyAllowlist(agent, st) && !bypass) || (deniesEveryAction(agent, st) && !(bypass && usesMCP(agent, st)))
-	if agent.SettingsInput != "" && readOnlySettings(st.With[agent.SettingsInput].Value) {
+	if agent.SettingsInput != "" && readOnlySettings(agent, st.With[agent.SettingsInput].Value) {
 		limited = true
 	}
 	broad := matchesAny(agent.BroadWhen, st.With) || matchesAny(agent.BroadWhenEnv, st.Env)
@@ -851,10 +859,10 @@ func ExecTools(reg *registry.Registry, text string) []string {
 	return out
 }
 
-// readOnlySettings reports a Gemini settings value whose tools are limited to
-// harmless shell commands with no MCP server. Auto-approval then approves
-// nothing that matters, which is how Google's triage template is built.
-func readOnlySettings(raw string) bool {
+// readOnlySettings reports a Gemini settings value whose tools only read, with no
+// MCP server. Auto-approval then approves nothing that matters, which is how
+// Google's triage template is built.
+func readOnlySettings(agent *registry.Agent, raw string) bool {
 	if strings.TrimSpace(raw) == "" {
 		return false
 	}
@@ -872,13 +880,5 @@ func readOnlySettings(raw string) bool {
 		return false
 	}
 	tools := append(doc.Tools.Core, doc.CoreTools...)
-	if len(tools) == 0 {
-		return false
-	}
-	for _, t := range tools {
-		if t != "run_shell_command(echo)" {
-			return false
-		}
-	}
-	return true
+	return len(tools) > 0 && allReadOnly(agent, tools)
 }

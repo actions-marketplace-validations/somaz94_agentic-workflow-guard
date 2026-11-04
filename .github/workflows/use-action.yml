@@ -78,4 +78,34 @@ jobs:
             exit 1
           fi
           test "$(jq -r '.version' results.sarif)" = "2.1.0"
-          echo "PASS: risky fixture reported and SARIF written"
+          jq -e '.runs[0].tool.driver.version | startswith("v")' results.sarif
+          echo "PASS: risky fixture reported and SARIF written with the release version"
+
+  smoke-test-indirect:
+    name: Smoke Test (Indirect)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [smoke-test-clean]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Scan the indirect fixture
+        id: scan
+        uses: somaz94/agentic-workflow-guard@v1
+        with:
+          path: testdata/indirect
+          fail_on: none
+
+      - name: Verify Output
+        env:
+          HIGH: ${{ steps.scan.outputs.high }}
+          MEDIUM: ${{ steps.scan.outputs.medium }}
+          LOW: ${{ steps.scan.outputs.low }}
+        run: |
+          set -euo pipefail
+          if [ "$HIGH" != "2" ] || [ "$MEDIUM" != "1" ] || [ "$LOW" != "2" ]; then
+            echo "FAIL: got high=$HIGH medium=$MEDIUM low=$LOW"
+            exit 1
+          fi
+          echo "PASS: reusable workflows, local actions and command-line agents are followed"

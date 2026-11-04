@@ -57,6 +57,38 @@ func (b *budget) noteParse(file string, err error) {
 // Source reads a file by its slash-separated path from the repository root.
 type Source func(rel string) ([]byte, error)
 
+// repoFacts is what a scan knows about the repository as a whole.
+type repoFacts struct {
+	// name is owner/name, empty when the scanned tree is not known to be it.
+	name string
+	// triggers maps each workflow's name and path to the events that start it.
+	triggers map[string]map[string][]string
+}
+
+// runSourcesOpen reports whether a `workflow_run` trigger can follow a run an
+// outsider caused. A source that cannot be found here, or a pattern, could be one.
+func (a *auditor) runSourcesOpen() bool {
+	root := a
+	for root.call != nil {
+		root = root.call.a
+	}
+	if root.repo.triggers == nil || len(root.wf.RunSources) == 0 {
+		return true
+	}
+	for _, name := range root.wf.RunSources {
+		events, ok := root.repo.triggers[name]
+		if !ok {
+			return true
+		}
+		for event := range events {
+			if reach.OutsiderCanTrigger(event) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // callSite is the job that called a reusable workflow.
 type callSite struct {
 	a   *auditor
@@ -155,7 +187,7 @@ func (a *auditor) called(job *workflow.Job) *auditor {
 		return nil
 	}
 	child := newAuditor(a.reg, a.src, rel, wf, &callSite{a, job}, a.warn)
-	child.budget = a.budget
+	child.budget, child.repo = a.budget, a.repo
 	return child
 }
 

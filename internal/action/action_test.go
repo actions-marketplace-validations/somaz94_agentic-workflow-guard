@@ -54,3 +54,13 @@ func TestRunErrors(t *testing.T) {
 		t.Error("unwritable sarif accepted")
 	}
 }
+
+func TestRepoName(t *testing.T) {
+	t.Setenv("GITHUB_REPOSITORY", "acme/app")
+	t.Setenv("GITHUB_WORKSPACE", "/w")
+	for path, want := range map[string]string{".": "acme/app", "/w": "acme/app", "testdata/x": "", "/other": ""} {
+		if got := repoName(path); got != want {
+			t.Errorf("repoName(%q) = %q; want %q", path, got, want)
+		}
+	}
+}

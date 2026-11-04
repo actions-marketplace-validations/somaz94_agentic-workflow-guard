@@ -404,3 +404,59 @@ func TestScanWarnsOnceAboutOneFile(t *testing.T) {
 		t.Errorf("warnings = %v", r.Warnings)
 	}
 }
+
+func TestScanRepoUsesTheName(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, ".github/workflows/w.yml", "on: issues\njobs:\n  a:\n    if: github.repository == 'acme/app'\n    steps:\n      - uses: openai/codex-action@v1\n        with:\n          allow-users: '*'\n")
+	for repo, want := range map[string]int{"": 1, "acme/app": 1, "someone/copy": 0} {
+		r, err := ScanRepo(reg(t), root, nil, repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(r.Findings) != want {
+			t.Errorf("repo %q: findings = %+v", repo, r.Findings)
+		}
+	}
+}
+
+func TestWorkflowRunFollowsItsSources(t *testing.T) {
+	const follower = "name: after\non:\n  workflow_run:\n    workflows: [%s]\n    types: [completed]\njobs:\n  a:\n    steps:\n      - uses: openai/codex-action@v1\n        with:\n          allow-users: '*'\n"
+	cases := []struct {
+		name, sources, release string
+		want                   int
+	}{
+		{"a source only maintainers start", "Release", "name: Release\non:\n  push:\n    tags: ['*']\njobs: {}\n", 0},
+		{"a source outsiders can start", "Release", "name: Release\non: [pull_request]\njobs: {}\n", 1},
+		{"one open source among closed ones", "Release, Other", "name: Release\non: push\njobs: {}\n", 1},
+		{"a source that is not here", "Elsewhere", "name: Release\non: push\njobs: {}\n", 1},
+		{"a source named by its path", ".github/workflows/r.yml", "on: push\njobs: {}\n", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			write(t, root, ".github/workflows/z.yml", fmt.Sprintf(follower, c.sources))
+			write(t, root, ".github/workflows/r.yml", c.release)
+			r, err := Scan(reg(t), root, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(r.Findings) != c.want {
+				t.Errorf("findings = %+v", r.Findings)
+			}
+		})
+	}
+}
+
+func TestCalledWorkflowFollowsItsCallersSources(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, ".github/workflows/r.yml", "name: Release\non: push\njobs: {}\n")
+	write(t, root, ".github/workflows/c.yml", "on: workflow_call\njobs:\n  r:\n    steps:\n      - uses: openai/codex-action@v1\n        with:\n          allow-users: '*'\n")
+	write(t, root, ".github/workflows/z.yml", "on:\n  workflow_run:\n    workflows: [Release]\njobs:\n  a:\n    uses: ./.github/workflows/c.yml\n")
+	r, err := Scan(reg(t), root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Findings) != 0 {
+		t.Errorf("findings = %+v", r.Findings)
+	}
+}

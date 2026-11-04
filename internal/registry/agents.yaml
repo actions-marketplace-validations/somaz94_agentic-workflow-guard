@@ -62,6 +62,18 @@ agents:
     actor_check: false
     power: scoped
     settings_input: settings
+    read_only_tools:
+      - run_shell_command(echo)
+      - run_shell_command(cat)
+      - run_shell_command(grep)
+      - run_shell_command(head)
+      - run_shell_command(tail)
+      - run_shell_command(gh issue view)
+      - run_shell_command(gh issue list)
+      - run_shell_command(gh pr view)
+      - run_shell_command(gh pr diff)
+      - run_shell_command(gh label list)
+      - run_shell_command(gh search issues)
     broad_when:
       - {input: gemini_args, pattern: '(^|\s)(--yes|-y|--yolo)(\s|$)'}
       - {input: settings, pattern: '"approval-?mode"\s*:\s*"yolo"'}
@@ -171,7 +183,7 @@ untrusted_fetch_pattern: 'github\.event_path|GITHUB_EVENT_PATH|github\.event\.wo
 
 # An output, env variable or input named like this holds an identifier or a flag,
 # not text, even when the step that set it read attacker-written text along the way.
-scalar_output_pattern: '(?i)(^|[_-])(sha|oid|number|num|id|count|size|url|exists|base_ref)$'
+scalar_output_pattern: '(?i)^(is|has|should|can)[_-]|(^|[_-])(sha|oid|number|num|id|count|size|url|exists|base_ref)$'
 
 # A needs or steps output named like this can carry an authorization result. Any
 # other output is flow control, and treating it as a gate would hide a finding.

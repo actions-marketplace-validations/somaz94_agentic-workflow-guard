@@ -33,10 +33,16 @@ var configFiles = []configFile{
 	{".gemini/settings.json", MCPConfig},
 }
 
-// Scan audits the workflows and agent configs under root. A file that cannot be
-// read as what its name promises is a warning: a broken workflow fails on its
-// own, and one bad file should not hide findings in the others.
+// Scan audits a tree whose repository name is not known.
 func Scan(reg *registry.Registry, root string, ignore []string) (*Report, error) {
+	return ScanRepo(reg, root, ignore, "")
+}
+
+// ScanRepo audits the workflows and agent configs under root, which is the
+// repository named repo when that is not empty. A file that cannot be read as what
+// its name promises is a warning: a broken workflow fails on its own, and one bad
+// file should not hide findings in the others.
+func ScanRepo(reg *registry.Registry, root string, ignore []string, repo string) (*Report, error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return nil, fmt.Errorf("scan path: %w", err)
@@ -45,11 +51,11 @@ func Scan(reg *registry.Registry, root string, ignore []string) (*Report, error)
 		return nil, fmt.Errorf("scan path %s is not a directory", root)
 	}
 	// The tree can come from a fork, and os.Root refuses a symlink out of it.
-	repo, err := os.OpenRoot(root)
+	tree, err := os.OpenRoot(root)
 	if err != nil {
 		return nil, fmt.Errorf("scan path: %w", err)
 	}
-	defer func() { _ = repo.Close() }()
+	defer func() { _ = tree.Close() }()
 	r := &Report{}
 	warned := map[string]bool{}
 	warn := func(m string) {
@@ -60,7 +66,7 @@ func Scan(reg *registry.Registry, root string, ignore []string) (*Report, error)
 	}
 	b := newBudget()
 	read := func(rel string) ([]byte, error) {
-		info, err := repo.Stat(rel)
+		info, err := tree.Stat(rel)
 		if err != nil {
 			return nil, err
 		}
@@ -71,12 +77,20 @@ func Scan(reg *registry.Registry, root string, ignore []string) (*Report, error)
 			b.reason = fmt.Sprintf("%s is larger than %d bytes", rel, maxFileSize)
 			return nil, b.limitError()
 		}
-		return repo.ReadFile(rel)
+		return tree.ReadFile(rel)
 	}
-	entries, err := fs.ReadDir(repo.FS(), ".github/workflows")
+	entries, err := fs.ReadDir(tree.FS(), ".github/workflows")
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("read workflows: %w", err)
 	}
+	// Parsed first, because a `workflow_run` trigger is judged by the workflows it
+	// follows, wherever they sort.
+	facts := &repoFacts{name: repo, triggers: map[string]map[string][]string{}}
+	type parsed struct {
+		rel string
+		wf  *workflow.Workflow
+	}
+	var files []parsed
 	for _, e := range entries {
 		ext := path.Ext(e.Name())
 		if e.IsDir() || (ext != ".yml" && ext != ".yaml") {
@@ -86,14 +100,13 @@ func Scan(reg *registry.Registry, root string, ignore []string) (*Report, error)
 		// in the output, and that compiler decides its gating. Without the source next
 		// to it, the name alone says nothing and the file runs like any other.
 		if base, ok := strings.CutSuffix(e.Name(), ".lock.yml"); ok {
-			if _, err := repo.Stat(".github/workflows/" + base + ".md"); err == nil {
+			if _, err := tree.Stat(".github/workflows/" + base + ".md"); err == nil {
 				continue
 			}
 		}
 		if b.exceeded() {
 			break
 		}
-		b.calls = 0
 		rel := ".github/workflows/" + e.Name()
 		data, err := read(rel)
 		if err != nil {
@@ -107,8 +120,19 @@ func Scan(reg *registry.Registry, root string, ignore []string) (*Report, error)
 			continue
 		}
 		r.Files++
-		a := newAuditor(reg, read, rel, wf, nil, warn)
-		a.budget = b
+		files = append(files, parsed{rel, wf})
+		facts.triggers[rel] = wf.Triggers
+		if wf.Name != "" {
+			facts.triggers[wf.Name] = wf.Triggers
+		}
+	}
+	for _, f := range files {
+		if b.exceeded() {
+			break
+		}
+		b.calls = 0
+		a := newAuditor(reg, read, f.rel, f.wf, nil, warn)
+		a.budget, a.repo = b, facts
 		r.Findings = append(r.Findings, a.run()...)
 	}
 	if b.exceeded() {

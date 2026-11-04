@@ -215,6 +215,34 @@ func TestRunTimeFacts(t *testing.T) {
 	}
 }
 
+func TestRepositoryNameWhenKnown(t *testing.T) {
+	ctx := func(repo string) Context { return Context{Event: "issues", Actions: []string{"opened"}, Repo: repo} }
+	const src = "github.repository == 'acme/app'"
+	if got := Eval(src, ctx("")); got != Reachable {
+		t.Errorf("unknown: %v", got)
+	}
+	if got := Eval(src, ctx("ACME/app")); got != Reachable {
+		t.Errorf("same: %v", got)
+	}
+	if got := Eval(src, ctx("other/app")); got != None {
+		t.Errorf("a copy: %v", got)
+	}
+	if got := Eval("github.repository_owner == 'acme'", ctx("other/app")); got != None {
+		t.Errorf("owner: %v", got)
+	}
+	if got := Eval("github.repository_owner != 'acme'", ctx("other/app")); got != Reachable {
+		t.Errorf("negated owner: %v", got)
+	}
+}
+
+func TestOutsiderCanTrigger(t *testing.T) {
+	for event, want := range map[string]bool{"pull_request": true, "issues": true, "push": false, "schedule": false, "release": false, "workflow_dispatch": false} {
+		if got := OutsiderCanTrigger(event); got != want {
+			t.Errorf("%s = %v", event, got)
+		}
+	}
+}
+
 func TestMergedDependsOnWhatCanRetrigger(t *testing.T) {
 	src := "github.event.pull_request.merged"
 	if got := Eval(src, Context{Event: "pull_request_target", Actions: []string{"closed"}}); got != Indeterminate {

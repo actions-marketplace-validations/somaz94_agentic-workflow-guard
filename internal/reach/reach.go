@@ -50,6 +50,9 @@ type Context struct {
 	Event   string
 	Actions []string
 	Actor   Actor
+	// Repo is this repository's owner/name when known. Without it, a name written
+	// into the workflow is assumed to be this repository's.
+	Repo string
 	// IsGate reports whether a needs or steps output, or a reusable workflow's
 	// input, could enforce authorization. Others are ordinary flow control and
 	// gate nothing. Nil treats all as gates.
@@ -72,6 +75,17 @@ var outsiderActions = map[string][]string{
 var defaultActions = map[string][]string{
 	"pull_request_target": {"opened", "synchronize", "reopened"},
 }
+
+// outsiderTriggers are events anyone can cause, including those with no secrets of
+// their own, because a workflow_run that follows them has secrets anyway.
+var outsiderTriggers = map[string]bool{
+	"pull_request": true, "pull_request_review": true, "pull_request_review_comment": true,
+	"pull_request_target": true, "issues": true, "issue_comment": true, "discussion": true,
+	"discussion_comment": true, "fork": true, "watch": true, "workflow_run": true,
+}
+
+// OutsiderCanTrigger reports whether someone with no rights can cause the event.
+func OutsiderCanTrigger(event string) bool { return outsiderTriggers[event] }
 
 // SecretEvents reports whether an event runs in the base repository's context,
 // with its secrets, whoever triggered it. pull_request and its review events
@@ -526,7 +540,14 @@ func (e *evaluator) resolve(path []string) value {
 		case "actor", "triggering_actor":
 			return value{kind: kIdentity}
 		case "repository", "repository_owner":
-			return value{kind: kSelf}
+			if e.ctx.Repo == "" {
+				return value{kind: kSelf}
+			}
+			if path[1] == "repository" {
+				return str(e.ctx.Repo)
+			}
+			owner, _, _ := strings.Cut(e.ctx.Repo, "/")
+			return str(owner)
 		case "head_ref":
 			return value{kind: kTaint}
 		case "event":
