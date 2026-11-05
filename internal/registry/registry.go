@@ -175,9 +175,116 @@ const shellAssign = `(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)`
 // shellNoise is the backslash that continues a command on the next line.
 var shellNoise = strings.NewReplacer("\\\n", " ")
 
-// WithoutComments blanks whole-line shell comments. The lines stay, so a
+// hereDoc matches a here-document's opening, whose body runs to a line holding its word.
+var hereDoc = regexp.MustCompile(`^<<(-?)[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\?([\w.-]+))`)
+
+// WithoutComments blanks shell comments, on their own line or after a command. A `#`
+// in a string or a here-document is text, so it follows both. Newlines stay, so a
 // continuation before a comment cannot swallow the command after it.
 func WithoutComments(script string) string {
+	var b strings.Builder
+	b.Grow(len(script))
+	var quote byte
+	var nested []byte // the quote to return to at each open `(`
+	var bodies []string
+	wordStart := true
+	for i := 0; i < len(script); i++ {
+		c := script[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+		case c == '\\' && i+1 < len(script):
+			i++
+			b.WriteByte(c)
+			b.WriteByte(script[i])
+			wordStart = wordStart && script[i] == '\n'
+			continue
+		case c == '$' && strings.HasPrefix(script[i:], "$("):
+			nested = append(nested, quote)
+			quote = 0
+			i++
+			b.WriteString("$(")
+			wordStart = true
+			continue
+		case quote == '"':
+			if c == '"' {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '(':
+			nested = append(nested, 0)
+		case c == ')' && len(nested) > 0:
+			quote = nested[len(nested)-1]
+			nested = nested[:len(nested)-1]
+		case c == '#' && wordStart:
+			end := strings.IndexByte(script[i:], '\n')
+			if end < 0 {
+				return b.String()
+			}
+			i += end - 1
+			continue
+		case strings.HasPrefix(script[i:], "<<<"):
+			i += 2
+			b.WriteString("<<<")
+			wordStart = true
+			continue
+		case c == '<':
+			if m := hereDoc.FindStringSubmatch(script[i:]); m != nil {
+				bodies = append(bodies, m[1]+m[2]+m[3]+m[4])
+				i += len(m[0]) - 1
+				b.WriteString(m[0])
+				wordStart = false
+				continue
+			}
+		case c == '\n' && len(bodies) > 0:
+			b.WriteByte(c)
+			i = copyHereDocs(&b, script, i+1, bodies) - 1
+			bodies = nil
+			wordStart = true
+			continue
+		}
+		b.WriteByte(c)
+		wordStart = quote == 0 && strings.IndexByte(" \t\n;&|()", c) >= 0
+	}
+	return b.String()
+}
+
+// copyHereDocs writes each body through its terminator and returns where it ended.
+// Its `#` lines go: `bash <<EOF` runs them as comments, and to any other reader of
+// the body they are no command either. A word opens `-` when tabs may lead its end.
+func copyHereDocs(b *strings.Builder, script string, pos int, words []string) int {
+	for _, word := range words {
+		word, tabs := strings.CutPrefix(word, "-")
+		for pos < len(script) {
+			end := strings.IndexByte(script[pos:], '\n')
+			next := len(script)
+			if end >= 0 {
+				next = pos + end + 1
+			}
+			line := script[pos:next]
+			pos = next
+			text := strings.TrimSuffix(line, "\n")
+			if tabs {
+				text = strings.TrimLeft(text, "\t")
+			}
+			if text == word {
+				b.WriteString(line)
+				break
+			}
+			if strings.HasPrefix(strings.TrimSpace(line), "#") {
+				line = line[len(strings.TrimSuffix(line, "\n")):]
+			}
+			b.WriteString(line)
+		}
+	}
+	return pos
+}
+
+// WithoutCommentLines blanks only lines that are wholly a comment.
+func WithoutCommentLines(script string) string {
 	lines := strings.Split(script, "\n")
 	for i, line := range lines {
 		if strings.HasPrefix(strings.TrimSpace(line), "#") {
@@ -207,11 +314,14 @@ func (r *Registry) FindRuns(script string) []*Agent {
 	if script == "" {
 		return nil
 	}
-	// Comments first: the shell ends one at its newline, even after a backslash.
+	// Comments first: the shell ends one at its newline, even after a backslash. A
+	// script built to fool the quote tracking must not hide an agent, so the plainer
+	// reading counts too.
 	text := shellNoise.Replace(WithoutComments(script))
+	plain := shellNoise.Replace(WithoutCommentLines(script))
 	var out []*Agent
 	for _, a := range r.Agents {
-		if a.run != nil && a.run.MatchString(text) {
+		if a.run != nil && (a.run.MatchString(text) || plain != text && a.run.MatchString(plain)) {
 			out = append(out, a)
 		}
 	}

@@ -288,7 +288,7 @@ func (a *auditor) authorizes(s workflow.Step) bool {
 	if s.Run != "" {
 		with = nil
 	}
-	return a.reg.Authorization.MatchString(joinInputs(registry.WithoutComments(s.Run)+" "+s.Uses, " ", with))
+	return a.reg.Authorization.MatchString(joinInputs(registry.WithoutCommentLines(registry.WithoutComments(s.Run))+" "+s.Uses, " ", with))
 }
 
 // joinInputs appends each value in sorted order: map order would change which file
@@ -549,49 +549,53 @@ func namesHead(ref string) bool {
 // past maxResolved ends the scan rather than leaving part of a value unread.
 func (a *auditor) resolved(value string, job *workflow.Job, idx int) string {
 	size := len(value)
-	return a.resolve(value, job, idx, 0, &size, map[traceKey]bool{})
+	return where{a: a, job: job, idx: idx}.resolve(value, 0, &size, map[traceKey]bool{})
 }
 
-func (a *auditor) resolve(value string, job *workflow.Job, idx, depth int, size *int, open map[traceKey]bool) string {
+func (w where) resolve(value string, depth int, size *int, open map[traceKey]bool) string {
 	if depth >= maxResolveDepth {
 		if refName.MatchString(value) {
-			a.budget.reason = fmt.Sprintf("a checkout value chains through more than %d references", maxResolveDepth)
+			w.a.budget.reason = fmt.Sprintf("a checkout value chains through more than %d references", maxResolveDepth)
 		}
 		return value
 	}
 	return refName.ReplaceAllStringFunc(value, func(ref string) string {
 		// A reference to nothing grows no text, so only the deadline stops many of them.
-		if a.budget.exceeded() {
+		if w.a.budget.exceeded() {
 			return ref
 		}
 		i := strings.IndexAny(ref, ".[")
 		scope, name := strings.ToLower(ref[:i]), strings.Trim(ref[i:], ".[]' \t\r\n")
-		text, owner, ownerJob, ownerIdx, ok := a.refText(scope, name, job, idx)
+		text, owner, ok := w.refText(scope, name)
 		if !ok {
 			return ref
 		}
-		// `R: ${{ env.R }}` reads itself, which ends here rather than exhausting the depth.
-		key := traceKey{kind: scope, job: job, idx: idx, name: strings.ToLower(name)}
+		// An input's default can read itself, which ends here rather than exhausting the depth.
+		key := traceKey{kind: scope, job: w.job, idx: w.idx, floor: w.envFloor, name: strings.ToLower(name)}
 		if open[key] {
 			return ref
 		}
 		if *size += len(text); *size > maxResolved {
-			a.budget.reason = fmt.Sprintf("a checkout value expands past %d bytes", maxResolved)
+			w.a.budget.reason = fmt.Sprintf("a checkout value expands past %d bytes", maxResolved)
 			return ref
 		}
 		open[key] = true
 		defer delete(open, key)
-		return owner.resolve(text, ownerJob, ownerIdx, depth+1, size, open)
+		return owner.resolve(text, depth+1, size, open)
 	})
 }
 
 // refText finds the text behind one reference and the scope that text reads from.
-func (a *auditor) refText(scope, name string, job *workflow.Job, idx int) (string, *auditor, *workflow.Job, int, bool) {
+func (w where) refText(scope, name string) (string, where, bool) {
+	a, job, idx := w.a, w.job, w.idx
 	if scope == "env" {
 		envs, at := a.stepEnvs(job, idx)
 		for level, m := range envs {
+			if level < w.envFloor {
+				continue
+			}
 			if in, ok := lookup(m, name); ok {
-				return in.Value, a, job, at[level], true
+				return in.Value, where{a: a, job: job, idx: at[level], envFloor: 1}, true
 			}
 		}
 		// Job and workflow env read the scope outside every composite action.
@@ -599,31 +603,35 @@ func (a *auditor) refText(scope, name string, job *workflow.Job, idx int) (strin
 		if len(at) > 0 {
 			top = at[len(at)-1]
 		}
-		for _, m := range []map[string]workflow.Input{job.Env, a.wf.Env} {
+		outer, _ := a.stepEnvs(job, top)
+		for i, m := range []map[string]workflow.Input{job.Env, a.wf.Env} {
+			if len(envs)+1+i <= w.envFloor {
+				continue
+			}
 			if in, ok := lookup(m, name); ok {
-				return in.Value, a, job, top, true
+				return in.Value, where{a: a, job: job, idx: top, envFloor: len(outer) + 1 + i}, true
 			}
 		}
-		return "", nil, nil, 0, false
+		return "", where{}, false
 	}
 	if fr := a.frameAt(job, idx); fr != nil {
 		if in, ok := lookup(fr.with, name); ok {
-			return in.Value, a, job, fr.at, true
+			return in.Value, where{a: a, job: job, idx: fr.at}, true
 		}
 		if in, ok := lookup(fr.defaults, name); ok {
-			return in.Value, a, job, fr.at, true
+			return in.Value, where{a: a, job: job, idx: fr.at}, true
 		}
-		return "", nil, nil, 0, false
+		return "", where{}, false
 	}
 	if c := a.call; c != nil {
 		if in, ok := lookup(c.job.With, name); ok {
-			return in.Value, c.a, c.a.flat(c.job), 0, true
+			return in.Value, where{a: c.a, job: c.a.flat(c.job)}, true
 		}
 		if in, ok := lookup(a.wf.CallInputs, name); ok {
-			return in.Value, a, job, idx, true
+			return in.Value, where{a: a, job: job, idx: idx}, true
 		}
 	}
-	return "", nil, nil, 0, false
+	return "", where{}, false
 }
 
 // withPaths appends every path in normalized form, so `head['sha']` reads like
@@ -727,8 +735,24 @@ func (a *auditor) fetchesUntrusted(s workflow.Step) bool {
 	return a.reg.UntrustedFetch.MatchString(joinInputs(s.Run, " ", s.With, s.Env))
 }
 
-// Power resolves what an agent step can do from its inputs.
+// Power resolves what an agent step can do from its inputs. A script counts at the
+// worse of two readings: a flag in a comment narrows nothing, and a script that fools
+// the quote tracking hides no flag.
 func Power(reg *registry.Registry, agent *registry.Agent, st workflow.Step) registry.Power {
+	in, ok := st.With[registry.RunInput]
+	if !ok || agent.RunPattern == "" {
+		return powerOf(reg, agent, st)
+	}
+	worst := registry.Limited
+	for _, text := range []string{registry.WithoutComments(in.Value), registry.WithoutCommentLines(in.Value)} {
+		in.Value = text
+		st.With = map[string]workflow.Input{registry.RunInput: in}
+		worst = max(worst, powerOf(reg, agent, st))
+	}
+	return worst
+}
+
+func powerOf(reg *registry.Registry, agent *registry.Agent, st workflow.Step) registry.Power {
 	// An allowlist only pre-approves tools, so bypass mode goes around one. A deny
 	// list still holds.
 	bypass := matchesAny(agent.BroadWhen, st.With) || matchesAny(agent.BroadWhenEnv, st.Env)

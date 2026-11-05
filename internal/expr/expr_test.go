@@ -6,6 +6,21 @@ import (
 	"testing"
 )
 
+func TestUnwrapReadsBracesInAStringAsText(t *testing.T) {
+	for in, ok := range map[string]bool{
+		"${{ contains(x, '}}') }}":  true,
+		"${{ contains(x, '${{') }}": true,
+		"${{ a }} and ${{ b }}":     false,
+		"${{ 'x' }} }}":             false,
+		"${{ false }}}":             false,
+		"${{ ' }} ' ' ${{ a }}":     false,
+	} {
+		if _, got := Unwrap(in); got != ok {
+			t.Errorf("Unwrap(%q) = %v; want %v", in, got, ok)
+		}
+	}
+}
+
 func TestUnwrap(t *testing.T) {
 	cases := []struct {
 		in, want string

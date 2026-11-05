@@ -91,14 +91,27 @@ func Unwrap(src string) (inner string, ok bool) {
 	if !strings.Contains(s, "${{") {
 		return s, true
 	}
-	if !strings.HasPrefix(s, "${{") || !strings.HasSuffix(s, "}}") {
+	if !strings.HasPrefix(s, "${{") {
 		return "", false
 	}
-	body := s[3 : len(s)-2]
-	if strings.Contains(body, "${{") || strings.Contains(body, "}}") {
-		return "", false
+	body := s[3:]
+	inString := false
+	for i := range len(body) {
+		switch {
+		case body[i] == '\'':
+			inString = !inString
+		case inString:
+		case strings.HasPrefix(body[i:], "${{"):
+			return "", false
+		case strings.HasPrefix(body[i:], "}}"):
+			// The first `}}` outside a string ends the template, as it does for the runner.
+			if i != len(body)-2 {
+				return "", false
+			}
+			return strings.TrimSpace(body[:i]), true
+		}
 	}
-	return strings.TrimSpace(body), true
+	return "", false
 }
 
 // maxLength is the runner's own limit, which also bounds how deep the recursive

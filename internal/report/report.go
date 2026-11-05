@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 
 	"github.com/somaz94/agentic-workflow-guard/internal/audit"
@@ -96,7 +97,7 @@ func SARIF(r *audit.Report, version string) ([]byte, error) {
 	results := make([]result, 0, len(r.Findings))
 	for _, f := range r.Findings {
 		results = append(results, result{f.Rule, levels[f.Severity], message{f.Message},
-			[]location{{physical{artifact{f.File}, region{f.Line}}}}})
+			[]location{{physical{artifact{(&url.URL{Path: f.File}).String()}, region{f.Line}}}}})
 	}
 	driver := map[string]interface{}{
 		"name":           "agentic-workflow-guard",

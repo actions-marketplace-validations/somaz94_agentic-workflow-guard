@@ -315,6 +315,21 @@ func TestCheckoutRefReadsEnvInTheScopeThatWroteIt(t *testing.T) {
 	}
 }
 
+func TestResolveFailsAtItsDepth(t *testing.T) {
+	wf, err := workflow.Parse([]byte("on: push\nenv:\n  R: head\njobs:\n  a:\n    steps:\n      - run: x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newAuditor(reg(t), nil, "w.yml", wf, nil, func(string) {})
+	at, size := where{a: a, job: a.flat(wf.Jobs[0])}, 0
+	if at.resolve("plain", maxResolveDepth, &size, map[traceKey]bool{}); a.budget.exceeded() {
+		t.Error("text with no reference has no chain to fail on")
+	}
+	if at.resolve("env.R", maxResolveDepth, &size, map[traceKey]bool{}); !a.budget.exceeded() {
+		t.Error("a reference past the depth went unnoticed")
+	}
+}
+
 func TestResolveStopsOnceTheBudgetIsSpent(t *testing.T) {
 	wf, err := workflow.Parse([]byte("on: push\nenv:\n  R: head\njobs:\n  a:\n    steps:\n      - run: x\n"))
 	if err != nil {

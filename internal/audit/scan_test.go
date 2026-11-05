@@ -263,7 +263,7 @@ func TestScanRefusesHostileTrees(t *testing.T) {
 		write(t, root, ".github/workflows/w.yml", b.String())
 	}
 	expandingRef := func(root string) {
-		write(t, root, ".github/workflows/w.yml", "on: pull_request_target\njobs:\n  a:\n    env:\n      A: "+strings.Repeat("env.B ", 10_000)+"\n      B: "+strings.Repeat("x", 500_000)+"\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: ${{ env.A }}\n      - uses: actions/ai-inference@v2\n")
+		write(t, root, ".github/workflows/w.yml", "on: pull_request_target\nenv:\n  B: "+strings.Repeat("x", 500_000)+"\njobs:\n  a:\n    env:\n      A: "+strings.Repeat("env.B ", 10_000)+"\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: ${{ env.A }}\n      - uses: actions/ai-inference@v2\n")
 	}
 	selfChain := func(root string) {
 		var b strings.Builder
@@ -276,12 +276,13 @@ func TestScanRefusesHostileTrees(t *testing.T) {
 	}
 	checkoutChain := func(root string) {
 		var b strings.Builder
-		b.WriteString("on: pull_request_target\njobs:\n  a:\n    env:\n")
+		b.WriteString("on:\n  workflow_call:\n    inputs:\n")
 		for i := range maxResolveDepth + 5 {
-			fmt.Fprintf(&b, "      A%d: ${{ env.A%d }}\n", i, i+1)
+			fmt.Fprintf(&b, "      x%d:\n        default: ${{ inputs.x%d }}\n", i, i+1)
 		}
-		b.WriteString("    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: ${{ env.A0 }}\n      - uses: actions/ai-inference@v2\n")
-		write(t, root, ".github/workflows/w.yml", b.String())
+		b.WriteString("jobs:\n  r:\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: ${{ inputs.x0 }}\n      - uses: actions/ai-inference@v2\n")
+		write(t, root, ".github/workflows/called.yml", b.String())
+		write(t, root, ".github/workflows/w.yml", "on: pull_request_target\njobs:\n  c:\n    uses: ./.github/workflows/called.yml\n")
 	}
 	large := func(root string) {
 		write(t, root, ".github/workflows/w.yml", "# "+strings.Repeat("a", maxFileSize)+"\n")
@@ -507,6 +508,15 @@ func TestScanIsQuietWhereNoConfigExists(t *testing.T) {
 func TestScanAllowsAnEnvThatReadsItself(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, ".github/workflows/w.yml", "on: pull_request_target\njobs:\n  a:\n    env:\n      R: ${{ env.R }}\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: ${{ env.R }}\n      - uses: actions/ai-inference@v2\n")
+	if _, err := Scan(reg(t), root, nil); err != nil {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestScanAllowsADefaultThatReadsItself(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, ".github/workflows/w.yml", "on: pull_request_target\npermissions: {}\njobs:\n  c:\n    uses: ./called/agent.yml\n")
+	write(t, root, "called/agent.yml", "on:\n  workflow_call:\n    inputs:\n      x:\n        default: ${{ inputs.x }}\njobs:\n  r:\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: ${{ inputs.x }}\n      - uses: actions/ai-inference@v2\n")
 	if _, err := Scan(reg(t), root, nil); err != nil {
 		t.Errorf("err = %v", err)
 	}

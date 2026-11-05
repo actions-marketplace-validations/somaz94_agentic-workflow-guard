@@ -116,6 +116,22 @@ func TestSummaryNamesWhatWasNotAudited(t *testing.T) {
 	}
 }
 
+func TestSARIFEscapesTheFileName(t *testing.T) {
+	for file, want := range map[string]string{
+		".github/workflows/w.yml": `".github/workflows/w.yml"`,
+		"a b#c?.yml":              `"a%20b%23c%3F.yml"`,
+		"a:b.yml":                 `"./a:b.yml"`,
+	} {
+		data, err := SARIF(&audit.Report{Findings: []audit.Finding{{Rule: audit.RuleBroadTools, Severity: audit.High, File: file, Line: 1, Message: "m"}}}, "v1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), `"uri": `+want) {
+			t.Errorf("%s: no uri %s in:\n%s", file, want, data)
+		}
+	}
+}
+
 func TestSARIFNamesOnlyARealVersion(t *testing.T) {
 	version := func(v string) interface{} {
 		t.Helper()
