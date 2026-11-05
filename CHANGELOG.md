@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.0.4](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.3...v1.0.4) (2026-11-05)
+
+### Bug Fixes
+
+- stop a stray bracket or unclosed template from misleading the audit ([8719a52](https://github.com/somaz94/agentic-workflow-guard/commit/8719a52c1c07bf07c43723b233d4299cf3ff3e8d))
+
+### Chores
+
+- bump the action image to v1.0.4 ([56d6167](https://github.com/somaz94/agentic-workflow-guard/commit/56d6167294778611ebfdb67a1ee45084383e88a4))
+
+### Contributors
+
+- somaz
+
+<br/>
+
 ## [v1.0.3](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.2...v1.0.3) (2026-11-05)
 
 ### Bug Fixes
