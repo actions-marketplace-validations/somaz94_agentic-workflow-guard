@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/somaz94/agentic-workflow-guard/internal/audit"
+	"github.com/somaz94/agentic-workflow-guard/internal/output"
 )
 
 // Text from a hostile tree stays on its line, or a file name or config value quoted
@@ -23,15 +24,11 @@ func Annotations(w io.Writer, r *audit.Report) {
 	levels := map[audit.Severity]string{audit.High: "error", audit.Medium: "warning", audit.Low: "notice"}
 	for _, f := range r.Findings {
 		fmt.Fprintf(w, "::%s file=%s,line=%d,title=%s::%s\n",
-			levels[f.Severity], escapeProperty(f.File), f.Line, escapeProperty(f.Rule), escapeData(f.Message))
+			levels[f.Severity], escapeProperty(f.File), f.Line, escapeProperty(f.Rule), output.EscapeData(f.Message))
 	}
 	for _, m := range r.Warnings {
-		fmt.Fprintf(w, "::warning::%s\n", escapeData(m))
+		fmt.Fprintf(w, "::warning::%s\n", output.EscapeData(m))
 	}
-}
-
-func escapeData(s string) string {
-	return strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A").Replace(s)
 }
 
 func escapeProperty(s string) string {

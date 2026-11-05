@@ -3,7 +3,6 @@ package audit
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/somaz94/agentic-workflow-guard/internal/registry"
@@ -60,13 +59,8 @@ func MCPConfig(reg *registry.Registry, file string, data []byte) ([]Finding, err
 	if servers == nil {
 		servers = doc.Servers
 	}
-	names := make([]string, 0, len(servers))
-	for n := range servers {
-		names = append(names, n)
-	}
-	sort.Strings(names)
 	var out []Finding
-	for _, name := range names {
+	for _, name := range sortedKeys(servers) {
 		var s mcpServer
 		if json.Unmarshal(servers[name], &s) != nil {
 			continue

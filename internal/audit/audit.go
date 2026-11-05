@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/somaz94/agentic-workflow-guard/internal/reach"
@@ -358,8 +359,8 @@ func (a *auditor) step(job *workflow.Job, idx int, agent *registry.Agent) []Find
 	}
 
 	var out []Finding
-	add := func(rule string, sev Severity, line int, msg string) {
-		if state == reach.Indeterminate {
+	addAt := func(gate reach.State, rule string, sev Severity, line int, msg string) {
+		if gate == reach.Indeterminate {
 			sev = lower(sev)
 			msg += " A run-time check may gate this; verify that it does."
 		}
@@ -369,6 +370,7 @@ func (a *auditor) step(job *workflow.Job, idx int, agent *registry.Agent) []Find
 		out = append(out, Finding{Rule: rule, Severity: sev, File: file, Line: line,
 			Message: where + ": " + msg})
 	}
+	add := func(rule string, sev Severity, line int, msg string) { addAt(state, rule, sev, line, msg) }
 	bySeverity := func(broad, scoped, limited Severity) Severity {
 		switch power {
 		case registry.Broad:
@@ -384,21 +386,22 @@ func (a *auditor) step(job *workflow.Job, idx int, agent *registry.Agent) []Find
 		}
 		return without
 	}
+	exposed := bySeverity(High, writeSplit(High, Medium), writeSplit(Medium, Low))
 
 	if state != reach.None {
 		switch {
 		case wildcard:
-			add(RuleOpenInvocation, bySeverity(High, writeSplit(High, Medium), writeSplit(Medium, Low)), wildLine,
+			add(RuleOpenInvocation, exposed, wildLine,
 				fmt.Sprintf("%s can invoke the %s agent because its actor allowlist is '*'.", who, agent.ID))
 		case computed:
-			add(RuleOpenInvocation, bySeverity(High, writeSplit(High, Medium), writeSplit(Medium, Low)), wildLine,
+			add(RuleOpenInvocation, exposed, wildLine,
 				fmt.Sprintf("%s may be able to invoke the %s agent, because an expression sets its actor allowlist and can hold '*'.", who, agent.ID))
 		case !agent.ActorCheck && inputRef == "" && power != registry.Limited:
 			add(RuleOpenInvocation, bySeverity(High, Medium, Low), st.Line,
 				fmt.Sprintf("%s can start the %s agent, which has no built-in actor check, and it can read their content through its tools.", who, agent.ID))
 		}
 		if inputRef != "" {
-			add(RuleUntrustedInput, bySeverity(High, writeSplit(High, Medium), writeSplit(Medium, Low)), inputLine,
+			add(RuleUntrustedInput, exposed, inputLine,
 				fmt.Sprintf("%s can write %s, which flows into the %s agent's input.", who, inputRef, agent.ID))
 		}
 		switch a.checkoutOf(job, idx) {
@@ -411,15 +414,13 @@ func (a *auditor) step(job *workflow.Job, idx int, agent *registry.Agent) []Find
 		}
 	}
 	if (botWildcard || botComputed) && exp.state != reach.None && !wildcard && !computed {
-		saved := state
-		state = exp.state
+		gate := exp.state
 		msg := fmt.Sprintf("any GitHub App can invoke the %s agent because its bot allowlist is '*'.", agent.ID)
 		if botComputed {
-			state = reach.Combine(state, reach.Indeterminate)
+			gate = reach.Combine(gate, reach.Indeterminate)
 			msg = fmt.Sprintf("any GitHub App may be able to invoke the %s agent, because an expression sets its bot allowlist and can hold '*'.", agent.ID)
 		}
-		add(RuleOpenInvocation, Medium, botLine, msg)
-		state = saved
+		addAt(gate, RuleOpenInvocation, Medium, botLine, msg)
 	}
 	if power == registry.Broad {
 		sev := Low
@@ -761,7 +762,7 @@ func powerOf(reg *registry.Registry, agent *registry.Agent, st workflow.Step) re
 	if agent.SettingsInput != "" && readOnlySettings(agent, st.With[agent.SettingsInput].Value) {
 		limited = true
 	}
-	broad := matchesAny(agent.BroadWhen, st.With) || matchesAny(agent.BroadWhenEnv, st.Env)
+	broad := bypass
 	for _, name := range agent.ToolInputs {
 		text := st.With[name].Value
 		// A shell script names `Bash` in prose too; only its allowlist counts.
@@ -885,11 +886,7 @@ func splitTools(s string) []string {
 
 func allReadOnly(agent *registry.Agent, tools []string) bool {
 	for _, t := range tools {
-		known := false
-		for _, ok := range agent.ReadOnlyTools {
-			known = known || ok == t
-		}
-		if !known {
+		if !slices.Contains(agent.ReadOnlyTools, t) {
 			return false
 		}
 	}

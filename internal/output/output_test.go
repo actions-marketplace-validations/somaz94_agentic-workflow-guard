@@ -109,14 +109,15 @@ func TestAppendSummary(t *testing.T) {
 	}
 }
 
-func TestLogErrorCannotStartAWorkflowCommand(t *testing.T) {
+func stdoutOf(t *testing.T, f func()) string {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	saved := os.Stdout
 	os.Stdout = w
-	LogError("a\n::error::forged 100%")
+	f()
 	os.Stdout = saved
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
@@ -125,7 +126,15 @@ func TestLogErrorCannotStartAWorkflowCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "::error::a%0A::error::forged 100%25\n"; string(got) != want {
-		t.Errorf("got %q; want %q", got, want)
+	return string(got)
+}
+
+func TestLogCannotStartAWorkflowCommand(t *testing.T) {
+	msg := "a\n::error::forged 100%"
+	if got, want := stdoutOf(t, func() { LogError(msg) }), "::error::a%0A::error::forged 100%25\n"; got != want {
+		t.Errorf("LogError: got %q; want %q", got, want)
+	}
+	if got, want := stdoutOf(t, func() { LogWarning(msg) }), "::warning::a%0A::error::forged 100%25\n"; got != want {
+		t.Errorf("LogWarning: got %q; want %q", got, want)
 	}
 }

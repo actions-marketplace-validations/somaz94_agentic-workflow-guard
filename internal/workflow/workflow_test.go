@@ -83,7 +83,7 @@ func TestParse(t *testing.T) {
 		t.Fatalf("steps = %d; want 2, the scalar step dropped", len(a.Steps))
 	}
 	s := a.Steps[1]
-	if s.ID != "the-id" || s.Name != "not-a-scalar" || s.Uses != "o/a@v1" || s.If != "always()" || s.Line != 29 || s.Env["S"].Value != "c" {
+	if s.ID != "the-id" || s.Uses != "o/a@v1" || s.If != "always()" || s.Line != 29 || s.Env["S"].Value != "c" {
 		t.Errorf("step = %+v", s)
 	}
 	if s.With["plain"].Line != 35 || s.With["nested"].Value == "" {

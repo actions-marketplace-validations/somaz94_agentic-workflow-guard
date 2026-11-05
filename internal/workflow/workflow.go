@@ -34,7 +34,6 @@ type Input struct {
 // Step is one job step.
 type Step struct {
 	ID   string
-	Name string
 	Uses string
 	Run  string
 	If   string
@@ -59,7 +58,6 @@ type Job struct {
 	Permissions Permissions
 	Env         map[string]Input
 	Steps       []Step
-	Line        int
 	// ContinueOnError is true when the job failing does not stop what needs it.
 	ContinueOnError bool
 }
@@ -186,7 +184,6 @@ func job(key, n *yaml.Node) *Job {
 		Permissions: permissions(get(n, "permissions")),
 		Env:         inputs(get(n, "env")),
 		Steps:       parseSteps(get(n, "steps")),
-		Line:        key.Line,
 
 		ContinueOnError: truthyFlag(get(n, "continue-on-error")),
 	}
@@ -218,7 +215,6 @@ func parseSteps(n *yaml.Node) []Step {
 		}
 		out = append(out, Step{
 			ID:              scalar(get(s, "id")),
-			Name:            scalar(get(s, "name")),
 			Uses:            scalar(get(s, "uses")),
 			Run:             scalar(get(s, "run")),
 			If:              scalar(get(s, "if")),

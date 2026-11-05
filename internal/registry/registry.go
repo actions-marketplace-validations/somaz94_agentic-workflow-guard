@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -120,26 +121,21 @@ func parse(data []byte) (*Registry, error) {
 		r.ExecCommands[c] = true
 	}
 	var err error
-	if r.Untrusted, err = regexp.Compile(`^(` + strings.Join(raw.Untrusted, "|") + `)$`); err != nil {
-		return nil, fmt.Errorf("untrusted_contexts: %w", err)
-	}
-	if r.ExecArguments, err = regexp.Compile(raw.ExecArgs); err != nil {
-		return nil, fmt.Errorf("exec_argument_pattern: %w", err)
-	}
-	if r.Authorization, err = regexp.Compile(raw.Authz); err != nil {
-		return nil, fmt.Errorf("authorization_pattern: %w", err)
-	}
-	if r.Secret, err = regexp.Compile(raw.Secret); err != nil {
-		return nil, fmt.Errorf("secret_pattern: %w", err)
-	}
-	if r.UntrustedFetch, err = regexp.Compile(raw.Fetch); err != nil {
-		return nil, fmt.Errorf("untrusted_fetch_pattern: %w", err)
-	}
-	if r.GateOutput, err = regexp.Compile(raw.Gate); err != nil {
-		return nil, fmt.Errorf("gate_output_pattern: %w", err)
-	}
-	if r.ScalarOutput, err = regexp.Compile(raw.Scalar); err != nil {
-		return nil, fmt.Errorf("scalar_output_pattern: %w", err)
+	for _, p := range []struct {
+		key, src string
+		dst      **regexp.Regexp
+	}{
+		{"untrusted_contexts", `^(` + strings.Join(raw.Untrusted, "|") + `)$`, &r.Untrusted},
+		{"exec_argument_pattern", raw.ExecArgs, &r.ExecArguments},
+		{"authorization_pattern", raw.Authz, &r.Authorization},
+		{"secret_pattern", raw.Secret, &r.Secret},
+		{"untrusted_fetch_pattern", raw.Fetch, &r.UntrustedFetch},
+		{"gate_output_pattern", raw.Gate, &r.GateOutput},
+		{"scalar_output_pattern", raw.Scalar, &r.ScalarOutput},
+	} {
+		if *p.dst, err = regexp.Compile(p.src); err != nil {
+			return nil, fmt.Errorf("%s: %w", p.key, err)
+		}
 	}
 	for _, a := range r.Agents {
 		if a.RunPattern != "" {
@@ -337,10 +333,8 @@ func (r *Registry) Find(uses string) *Agent {
 	}
 	name := strings.ToLower(parts[0] + "/" + parts[1])
 	for _, a := range r.Agents {
-		for _, u := range a.Uses {
-			if u == name {
-				return a
-			}
+		if slices.Contains(a.Uses, name) {
+			return a
 		}
 	}
 	return nil

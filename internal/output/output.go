@@ -7,19 +7,19 @@ import (
 	"strings"
 )
 
-// LogInfo prints an info-level message in GitHub Actions format.
-func LogInfo(msg string) {
-	fmt.Println(msg)
-}
-
 // LogWarning prints a warning in GitHub Actions format.
 func LogWarning(msg string) {
-	fmt.Printf("::warning::%s\n", msg)
+	fmt.Printf("::warning::%s\n", EscapeData(msg))
 }
 
 // LogError prints an error in GitHub Actions format.
 func LogError(msg string) {
-	fmt.Printf("::error::%s\n", strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A").Replace(msg))
+	fmt.Printf("::error::%s\n", EscapeData(msg))
+}
+
+// EscapeData keeps text on one workflow command, so it cannot start another.
+func EscapeData(s string) string {
+	return strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A").Replace(s)
 }
 
 // SetOutput writes a key-value pair to the GITHUB_OUTPUT file.
