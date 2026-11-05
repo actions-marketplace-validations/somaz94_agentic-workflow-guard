@@ -1,6 +1,7 @@
 package output
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -33,7 +34,6 @@ func SetOutput(name, value string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open GITHUB_OUTPUT: %w", err)
 	}
-	defer func() { _ = f.Close() }()
 
 	if strings.Contains(value, "\n") {
 		delimiter := "EOF"
@@ -41,7 +41,7 @@ func SetOutput(name, value string) error {
 	} else {
 		_, err = fmt.Fprintf(f, "%s=%s\n", name, value)
 	}
-	return err
+	return errors.Join(err, f.Close())
 }
 
 // AppendSummary adds Markdown to the job summary. Outside a runner there is no
@@ -55,7 +55,6 @@ func AppendSummary(markdown string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open GITHUB_STEP_SUMMARY: %w", err)
 	}
-	defer func() { _ = f.Close() }()
 	_, err = f.WriteString(markdown)
-	return err
+	return errors.Join(err, f.Close())
 }

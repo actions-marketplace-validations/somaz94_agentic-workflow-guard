@@ -10,6 +10,13 @@ import (
 	"github.com/somaz94/agentic-workflow-guard/internal/audit"
 )
 
+// Text from a hostile tree stays on its line, or a file name or config value quoted
+// in a finding could start new Markdown in the summary.
+var (
+	oneLine   = strings.NewReplacer("\r", " ", "\n", " ")
+	tableCell = strings.NewReplacer("\r", " ", "\n", " ", "|", "\\|")
+)
+
 // Annotations writes one workflow command per finding.
 func Annotations(w io.Writer, r *audit.Report) {
 	levels := map[audit.Severity]string{audit.High: "error", audit.Medium: "warning", audit.Low: "notice"}
@@ -39,13 +46,13 @@ func Summary(r *audit.Report) string {
 	if len(r.Findings) > 0 {
 		b.WriteString("\n| Severity | Rule | Location | Finding |\n|---|---|---|---|\n")
 		for _, f := range r.Findings {
-			fmt.Fprintf(&b, "| %s | `%s` | `%s:%d` | %s |\n", f.Severity, f.Rule, f.File, f.Line, strings.ReplaceAll(f.Message, "|", "\\|"))
+			fmt.Fprintf(&b, "| %s | `%s` | `%s:%d` | %s |\n", f.Severity, f.Rule, tableCell.Replace(f.File), f.Line, tableCell.Replace(f.Message))
 		}
 	}
 	if len(r.Warnings) > 0 {
 		b.WriteString("\nNot audited, so the counts above say nothing about these:\n\n")
 		for _, m := range r.Warnings {
-			fmt.Fprintf(&b, "- %s\n", strings.ReplaceAll(m, "\n", " "))
+			fmt.Fprintf(&b, "- %s\n", oneLine.Replace(m))
 		}
 	}
 	return b.String()

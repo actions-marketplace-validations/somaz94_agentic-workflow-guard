@@ -95,6 +95,24 @@ func TestFindRunsReturnsEveryAgent(t *testing.T) {
 	}
 }
 
+func TestFindRunsSeesPastAComment(t *testing.T) {
+	r, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, script := range []string{
+		"# note \\\nclaude -p x",
+		"echo a \\\n  # note\nclaude -p x",
+	} {
+		if a := r.FindRuns(script); len(a) != 1 || a[0].ID != "claude-cli" {
+			t.Errorf("FindRuns(%q) = %+v; want claude-cli", script, a)
+		}
+	}
+	if a := r.FindRuns("# claude -p x \\\n  --version"); a != nil {
+		t.Errorf("a comment ran an agent: %+v", a)
+	}
+}
+
 func TestNarrowedBy(t *testing.T) {
 	r, err := Load()
 	if err != nil {

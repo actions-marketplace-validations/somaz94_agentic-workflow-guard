@@ -40,13 +40,19 @@ type where struct {
 // tracer serves one agent step.
 type tracer struct {
 	events []string
-	memo   map[string]bool
-	files  map[string][]string
+	memo   map[traceKey]bool
+	files  map[traceKey][]string
 	budget *budget
-	// children keeps called workflows alive: memo keys hold their addresses, which a
-	// freed one would hand to the next.
-	children map[*workflow.Job]*auditor
-	depth    int
+	depth  int
+}
+
+// traceKey holds the job itself rather than its address as text, so the job stays
+// alive and its address cannot be reused while the key exists.
+type traceKey struct {
+	kind       string
+	job        *workflow.Job
+	idx, floor int
+	name       string
 }
 
 // maxTraceDepth stops a chain of references long before the stack would. Real ones
@@ -54,13 +60,12 @@ type tracer struct {
 const maxTraceDepth = 2000
 
 func newTracer(events []string, b *budget) *tracer {
-	return &tracer{events: events, memo: map[string]bool{}, files: map[string][]string{}, budget: b,
-		children: map[*workflow.Job]*auditor{}}
+	return &tracer{events: events, memo: map[traceKey]bool{}, files: map[traceKey][]string{}, budget: b}
 }
 
 // once memoizes by key. A key still being computed answers false, which is what
 // ends a cycle such as a step output that reads itself.
-func (t *tracer) once(key string, compute func() bool) bool {
+func (t *tracer) once(key traceKey, compute func() bool) bool {
 	if v, ok := t.memo[key]; ok {
 		return v
 	}
@@ -174,7 +179,7 @@ func (t *tracer) ref(p []string, w where) bool {
 		}
 		return t.input(p[1], w)
 	case "matrix":
-		return t.once(fmt.Sprintf("matrix/%p", w.job), func() bool {
+		return t.once(traceKey{kind: "matrix", job: w.job}, func() bool {
 			return t.origin(w.job.Strategy["matrix"].Value, w) != ""
 		})
 	}
@@ -258,7 +263,7 @@ func (a *auditor) stepEnvs(job *workflow.Job, idx int) ([]map[string]workflow.In
 // keeps `PROMPT` and `prompt` apart. Every writer counts because a background step
 // can land after a later one.
 func (t *tracer) env(name string, w where) bool {
-	key := fmt.Sprintf("env/%p/%d/%d/%s", w.job, w.idx, w.envFloor, strings.ToLower(name))
+	key := traceKey{kind: "env", job: w.job, idx: w.idx, floor: w.envFloor, name: strings.ToLower(name)}
 	return t.once(key, func() bool {
 		hidden := map[string]bool{}
 		carried := func(scope map[string]workflow.Input, at where) bool {
@@ -349,7 +354,7 @@ func (t *tracer) anyEnv(w where) bool {
 // text. Which output a step sets cannot be told from outside, so one tainted
 // input taints all of them.
 func (t *tracer) step(w where) bool {
-	key := fmt.Sprintf("step/%p/%d", w.job, w.idx)
+	key := traceKey{kind: "step", job: w.job, idx: w.idx}
 	return t.once(key, func() bool {
 		st := w.job.Steps[w.idx]
 		if w.a.fetchesUntrusted(st) || t.origin(st.Run, w) != "" {
@@ -414,7 +419,7 @@ func unplacedArtifact(s workflow.Step) bool {
 }
 
 func (t *tracer) writtenBy(job *workflow.Job, i int) []string {
-	key := fmt.Sprintf("%p/%d", job, i)
+	key := traceKey{job: job, idx: i}
 	files, ok := t.files[key]
 	if !ok {
 		files = writtenFiles(job.Steps[i])
@@ -424,10 +429,7 @@ func (t *tracer) writtenBy(job *workflow.Job, i int) []string {
 }
 
 func writtenFiles(s workflow.Step) []string {
-	text := s.Run
-	for _, in := range s.With {
-		text += "\n" + in.Value
-	}
+	text := joinInputs(s.Run, "\n", s.With)
 	seen := map[string]bool{}
 	var out []string
 	// An artifact lands where its step says, under a name the run that made it chose.
@@ -484,12 +486,11 @@ func isNameByte(c byte) bool {
 // calledOutput answers for a job that calls a reusable workflow. Which of its steps
 // feeds an output is declared a level away, so one tainted step taints them all.
 func (t *tracer) calledOutput(need *workflow.Job, w where) bool {
-	return t.once(fmt.Sprintf("called/%p", need), func() bool {
+	return t.once(traceKey{kind: "called", job: need}, func() bool {
 		child := w.a.called(need)
 		if child == nil {
 			return false
 		}
-		t.children[need] = child
 		for _, job := range child.wf.Jobs {
 			if job.Uses != "" {
 				if t.calledOutput(job, where{a: child, job: job}) {
@@ -521,7 +522,7 @@ func (t *tracer) jobOutput(job, name string, w where) bool {
 		return false
 	}
 	flat := w.a.flat(need)
-	key := fmt.Sprintf("output/%p/%s", flat, strings.ToLower(name))
+	key := traceKey{kind: "output", job: flat, name: strings.ToLower(name)}
 	return t.once(key, func() bool {
 		return t.origin(out.Value, where{a: w.a, job: flat, idx: len(flat.Steps)}) != ""
 	})
@@ -546,7 +547,7 @@ func (t *tracer) jobOutputs(job string, w where) bool {
 // input resolves a composite action's input against its calling step, or a
 // reusable workflow's against its calling job, falling back to the default.
 func (t *tracer) input(name string, w where) bool {
-	key := fmt.Sprintf("input/%p/%d/%s", w.job, w.idx, strings.ToLower(name))
+	key := traceKey{kind: "input", job: w.job, idx: w.idx, name: strings.ToLower(name)}
 	return t.once(key, func() bool {
 		if fr := w.a.frameAt(w.job, w.idx); fr != nil {
 			at := where{a: w.a, job: w.job, idx: fr.at}

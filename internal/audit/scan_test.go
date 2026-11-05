@@ -274,6 +274,15 @@ func TestScanRefusesHostileTrees(t *testing.T) {
 		}
 		write(t, root, ".github/workflows/w.yml", b.String())
 	}
+	checkoutChain := func(root string) {
+		var b strings.Builder
+		b.WriteString("on: pull_request_target\njobs:\n  a:\n    env:\n")
+		for i := range maxResolveDepth + 5 {
+			fmt.Fprintf(&b, "      A%d: ${{ env.A%d }}\n", i, i+1)
+		}
+		b.WriteString("    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: ${{ env.A0 }}\n      - uses: actions/ai-inference@v2\n")
+		write(t, root, ".github/workflows/w.yml", b.String())
+	}
 	large := func(root string) {
 		write(t, root, ".github/workflows/w.yml", "# "+strings.Repeat("a", maxFileSize)+"\n")
 	}
@@ -293,7 +302,7 @@ func TestScanRefusesHostileTrees(t *testing.T) {
 	}
 	for name, build := range map[string]func(string){
 		"composite fan-out": bomb, "reusable fan-out": fanout, "alias expansion": aliases, "alias expansion of empty strings": emptyAliases,
-		"oversized file": large, "checkout value that expands": expandingRef, "reference chain": selfChain, "alias expansion in a called workflow": calledAliases, "alias expansion in an action": actionAliases,
+		"oversized file": large, "checkout value that expands": expandingRef, "checkout value that chains": checkoutChain, "reference chain": selfChain, "alias expansion in a called workflow": calledAliases, "alias expansion in an action": actionAliases,
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
@@ -312,6 +321,33 @@ func TestScanRefusesHostileTrees(t *testing.T) {
 				t.Fatal("scan did not stop")
 			}
 		})
+	}
+}
+
+func TestScanStopsAtItsDeadlineWhileResolvingACheckout(t *testing.T) {
+	saved := scanTimeout
+	scanTimeout = time.Second
+	defer func() { scanTimeout = saved }()
+	var b strings.Builder
+	b.WriteString("on: pull_request_target\njobs:\n  a:\n    env:\n")
+	for i := range 30_000 {
+		fmt.Fprintf(&b, "      k%d: v\n", i)
+	}
+	b.WriteString("    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: " + strings.Repeat("env.x ", 80_000) + "\n      - uses: actions/ai-inference@v2\n")
+	root := t.TempDir()
+	write(t, root, ".github/workflows/w.yml", b.String())
+	done := make(chan error, 1)
+	go func() {
+		_, err := Scan(reg(t), root, nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "took longer") {
+			t.Errorf("err = %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("scan did not stop")
 	}
 }
 
@@ -402,6 +438,77 @@ func TestScanWarnsOnceAboutOneFile(t *testing.T) {
 	}
 	if len(r.Warnings) != 1 {
 		t.Errorf("warnings = %v", r.Warnings)
+	}
+}
+
+func TestScanWarnsOnceAboutAnUnreadableCalledWorkflow(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, ".github/workflows/w.yml", "on: issues\njobs:\n  a:\n    uses: ./.github/workflows/link.yml\n")
+	outside := filepath.Join(t.TempDir(), "secret.yml")
+	if err := os.WriteFile(outside, []byte("on: workflow_call\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, ".github", "workflows", "link.yml")); err != nil {
+		t.Skip(err)
+	}
+	r, err := Scan(reg(t), root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Warnings) != 1 {
+		t.Errorf("warnings = %v", r.Warnings)
+	}
+}
+
+func TestScanWarnsOnceAboutABrokenCalledWorkflow(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, ".github/workflows/bad.yml", "a: [")
+	write(t, root, ".github/workflows/w.yml", "on: issues\njobs:\n  a:\n    uses: ./.github/workflows/bad.yml\n")
+	r, err := Scan(reg(t), root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Warnings) != 1 {
+		t.Errorf("warnings = %v", r.Warnings)
+	}
+}
+
+func TestScanWarnsAboutAConfigItCannotRead(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, ".mcp.json/x", "")
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "s.json"), filepath.Join(root, ".claude", "settings.json")); err != nil {
+		t.Skip(err)
+	}
+	r, err := Scan(reg(t), root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(r.Warnings, "\n")
+	if len(r.Warnings) != 2 || !strings.Contains(joined, ".mcp.json") || !strings.Contains(joined, ".claude/settings.json") {
+		t.Errorf("warnings = %v", r.Warnings)
+	}
+}
+
+func TestScanIsQuietWhereNoConfigExists(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, ".claude", "a file, not the config directory")
+	r, err := Scan(reg(t), root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Warnings) != 0 {
+		t.Errorf("warnings = %v", r.Warnings)
+	}
+}
+
+func TestScanAllowsAnEnvThatReadsItself(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, ".github/workflows/w.yml", "on: pull_request_target\njobs:\n  a:\n    env:\n      R: ${{ env.R }}\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: ${{ env.R }}\n      - uses: actions/ai-inference@v2\n")
+	if _, err := Scan(reg(t), root, nil); err != nil {
+		t.Errorf("err = %v", err)
 	}
 }
 

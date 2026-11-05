@@ -53,6 +53,24 @@ func TestSummary(t *testing.T) {
 	}
 }
 
+func TestSummaryKeepsHostileTextInItsRow(t *testing.T) {
+	s := Summary(&audit.Report{
+		Findings: []audit.Finding{{Rule: audit.RuleBroadTools, Severity: audit.High, File: "a\n# f|x.yml", Line: 1, Message: "Bash(*)\n\n## All clear\r\n"}},
+		Warnings: []string{"w.yml:\r## Clean"},
+	})
+	for _, line := range strings.Split(s, "\n") {
+		if strings.HasPrefix(line, "## ") && line != "## Agentic Workflow Audit" || strings.HasPrefix(line, "# ") {
+			t.Errorf("forged heading %q in:\n%s", line, s)
+		}
+	}
+	if strings.Contains(s, "\r") {
+		t.Errorf("carriage return in:\n%s", s)
+	}
+	if !strings.Contains(s, `a # f\|x.yml`) {
+		t.Errorf("file not escaped:\n%s", s)
+	}
+}
+
 func TestSARIF(t *testing.T) {
 	data, err := SARIF(sample(), "v1")
 	if err != nil {

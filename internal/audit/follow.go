@@ -23,8 +23,8 @@ const (
 	maxCalls     = 1000
 	maxFileSize  = 1 << 20
 	maxResolved  = 1 << 16
-	// maxResolveDepth covers what real workflows chain through env and inputs.
-	maxResolveDepth = 6
+	// maxResolveDepth is past any real chain, and reaching it fails the scan.
+	maxResolveDepth = 64
 )
 
 // scanTimeout is the backstop for anything the counts do not see.

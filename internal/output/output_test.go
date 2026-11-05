@@ -80,6 +80,13 @@ func TestSetOutput_Fallback(t *testing.T) {
 	}
 }
 
+func TestSetOutput_UnwritablePath(t *testing.T) {
+	t.Setenv("GITHUB_OUTPUT", filepath.Join(t.TempDir(), "missing", "out"))
+	if err := SetOutput("key", "value"); err == nil {
+		t.Error("expected an error for an unwritable path")
+	}
+}
+
 func TestAppendSummary(t *testing.T) {
 	t.Setenv("GITHUB_STEP_SUMMARY", "")
 	if err := AppendSummary("x"); err != nil {

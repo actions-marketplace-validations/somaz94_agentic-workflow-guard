@@ -486,6 +486,33 @@ func TestWorkflowCases(t *testing.T) {
 		{"a comment about authorization checks nothing",
 			"on: issues\njobs:\n  a:\n    steps:\n      - run: |\n          # TODO check author_association here\n          echo\n      - uses: actions/ai-inference@v2\n        with:\n          prompt: ${{ github.event.issue.body }}\n",
 			[]string{"medium untrusted-input"}},
+		{"a comment in an agent's script checks nothing",
+			"on: issues\njobs:\n  a:\n    steps:\n      - run: |\n          # getCollaboratorPermissionLevel\n          claude -p hello\n      - uses: actions/ai-inference@v2\n        with:\n          prompt: ${{ github.event.issue.body }}\n",
+			[]string{"medium open-invocation", "medium untrusted-input"}},
+		{"a comment ending in a backslash hides no agent",
+			"on: issue_comment\njobs:\n  a:\n    steps:\n      - run: |\n          # note \\\n          claude -p \"${{ github.event.comment.body }}\" --allowedTools Bash\n",
+			[]string{"high broad-tools", "high untrusted-input"}},
+		{"a reference in another case",
+			"on: pull_request_target\npermissions: {}\nenv:\n  R: ${{ github.event.pull_request.head.sha }}\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: ${{ ENV.R }}\n      - uses: actions/ai-inference@v2\n",
+			[]string{"medium untrusted-checkout"}},
+		{"a reference by index",
+			"on: pull_request_target\npermissions: {}\nenv:\n  R: ${{ github.event.pull_request.head.sha }}\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: ${{ env['R'] }}\n      - uses: actions/ai-inference@v2\n",
+			[]string{"medium untrusted-checkout"}},
+		{"a reference by index across lines",
+			"on: pull_request_target\npermissions: {}\nenv:\n  R: ${{ github.event.pull_request.head.sha }}\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: \"${{ env[\\n'R'\\n] }}\"\n      - uses: actions/ai-inference@v2\n",
+			[]string{"medium untrusted-checkout"}},
+		{"an indexed path behind a reference",
+			"on: pull_request_target\npermissions: {}\nenv:\n  R: ${{ github.event.pull_request.head['sha'] }}\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: ${{ env.R }}\n      - uses: actions/ai-inference@v2\n",
+			[]string{"medium untrusted-checkout"}},
+		{"a variable read on both sides of ||",
+			"on: pull_request_target\npermissions: {}\nenv:\n  H: ${{ github.event.pull_request.head.sha }}\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: ${{ github.event.pull_request.head.repo.full_name == github.repository && env.H || env.H }}\n      - uses: actions/ai-inference@v2\n",
+			[]string{"medium untrusted-checkout"}},
+		{"a template in a string is only text",
+			"on: pull_request_target\npermissions: {}\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: \"${{ '${{ GITHUB.EVENT.PULL_REQUEST.HEAD.SHA }}' }}\"\n      - uses: actions/ai-inference@v2\n",
+			nil},
+		{"a template in a string hides no path beside it",
+			"on: pull_request_target\npermissions: {}\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v7\n        with:\n          ref: \"${{ format('${{ {0}', github.event.pull_request.head['sha']) }}\"\n      - uses: actions/ai-inference@v2\n",
+			[]string{"medium untrusted-checkout"}},
 		{"a check allowed to fail decides nothing",
 			"on: issues\njobs:\n  a:\n    steps:\n      - uses: x/check-user-permission@v1\n        continue-on-error: true\n      - uses: actions/ai-inference@v2\n        with:\n          prompt: ${{ github.event.issue.body }}\n",
 			[]string{"medium untrusted-input"}},
@@ -629,6 +656,29 @@ func TestWorkflowCases(t *testing.T) {
 				t.Errorf("got %v; want %v", got, c.want)
 			}
 		})
+	}
+}
+
+func TestAgentScriptCommentIsNoGateInEitherJobOrder(t *testing.T) {
+	gate := "  gate:\n    steps:\n      - run: |\n          # getCollaboratorPermissionLevel\n          claude -p hello\n"
+	agent := "  agent:\n    needs: gate\n    steps:\n      - uses: actions/ai-inference@v2\n        with:\n          prompt: ${{ github.event.issue.body }}\n"
+	for name, jobs := range map[string]string{"needed job first": gate + agent, "needed job last": agent + gate} {
+		got := run(t, "on: issues\njobs:\n"+jobs)
+		if !reflect.DeepEqual(got, []string{"medium open-invocation", "medium untrusted-input"}) {
+			t.Errorf("%s: got %v", name, got)
+		}
+	}
+}
+
+func TestWrittenFilesFollowInputOrder(t *testing.T) {
+	st := workflow.Step{With: map[string]workflow.Input{
+		"c": {Value: "echo x > c.txt"}, "a": {Value: "echo x > a.txt"}, "b": {Value: "echo x > b.txt"},
+	}}
+	want := []string{"a.txt", "b.txt", "c.txt"}
+	for range 50 {
+		if got := writtenFiles(st); !reflect.DeepEqual(got, want) {
+			t.Fatalf("got %v; want %v", got, want)
+		}
 	}
 }
 

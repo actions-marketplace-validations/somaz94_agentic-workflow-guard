@@ -58,7 +58,7 @@ var (
 	templateExpr   = regexp.MustCompile(`\$\{\{.*?\}\}`)
 	allowedArg     = regexp.MustCompile(`(?i)--allowed-?tools[ =]("[^"]*"|'[^']*'|[^ -][^ ]*(?: [^ -][^ ]*)*)`)
 	denyList       = regexp.MustCompile(`(?i)--disallowed-?tools[ =]("[^"]*"|'[^']*'|\S+)`)
-	refName        = regexp.MustCompile(`\b(?:env|inputs)\.[\w-]+`)
+	refName        = regexp.MustCompile(`(?i)\b(?:env|inputs)(?:\.[\w-]+|\[\s*'[^']*'\s*\])`)
 	deniedArg      = regexp.MustCompile(`(?i)--disallowed-?tools[ =]("[^"]*"|'[^']*'|\S+)|"(deny|disallowedTools)"\s*:\s*\[[^\]]*\]`)
 )
 
@@ -283,21 +283,26 @@ func (a *auditor) authorizes(s workflow.Step) bool {
 	if s.ContinueOnError {
 		return false
 	}
-	text := withoutComments(s.Run) + " " + s.Uses
-	for _, in := range s.With {
-		text += " " + in.Value
+	with := s.With
+	// agentsAt copies an agent's whole script into With, comments included.
+	if s.Run != "" {
+		with = nil
 	}
-	return a.reg.Authorization.MatchString(text)
+	return a.reg.Authorization.MatchString(joinInputs(registry.WithoutComments(s.Run)+" "+s.Uses, " ", with))
 }
 
-func withoutComments(script string) string {
-	var kept []string
-	for _, line := range strings.Split(script, "\n") {
-		if !strings.HasPrefix(strings.TrimSpace(line), "#") {
-			kept = append(kept, line)
+// joinInputs appends each value in sorted order: map order would change which file
+// a finding names, and aliases make repeated concatenation quadratic.
+func joinInputs(head, sep string, scopes ...map[string]workflow.Input) string {
+	var b strings.Builder
+	b.WriteString(head)
+	for _, scope := range scopes {
+		for _, k := range sortedKeys(scope) {
+			b.WriteString(sep)
+			b.WriteString(scope[k].Value)
 		}
 	}
-	return strings.Join(kept, "\n")
+	return b.String()
 }
 
 // anyWildcard finds `*` in an allowlist. computed is true when one comes from an
@@ -544,34 +549,59 @@ func namesHead(ref string) bool {
 // past maxResolved ends the scan rather than leaving part of a value unread.
 func (a *auditor) resolved(value string, job *workflow.Job, idx int) string {
 	size := len(value)
-	return a.resolve(value, job, idx, 0, &size)
+	return a.resolve(value, job, idx, 0, &size, map[traceKey]bool{})
 }
 
-func (a *auditor) resolve(value string, job *workflow.Job, idx, depth int, size *int) string {
+func (a *auditor) resolve(value string, job *workflow.Job, idx, depth int, size *int, open map[traceKey]bool) string {
 	if depth >= maxResolveDepth {
+		if refName.MatchString(value) {
+			a.budget.reason = fmt.Sprintf("a checkout value chains through more than %d references", maxResolveDepth)
+		}
 		return value
 	}
 	return refName.ReplaceAllStringFunc(value, func(ref string) string {
-		scope, name, _ := strings.Cut(ref, ".")
+		// A reference to nothing grows no text, so only the deadline stops many of them.
+		if a.budget.exceeded() {
+			return ref
+		}
+		i := strings.IndexAny(ref, ".[")
+		scope, name := strings.ToLower(ref[:i]), strings.Trim(ref[i:], ".[]' \t\r\n")
 		text, owner, ownerJob, ownerIdx, ok := a.refText(scope, name, job, idx)
 		if !ok {
+			return ref
+		}
+		// `R: ${{ env.R }}` reads itself, which ends here rather than exhausting the depth.
+		key := traceKey{kind: scope, job: job, idx: idx, name: strings.ToLower(name)}
+		if open[key] {
 			return ref
 		}
 		if *size += len(text); *size > maxResolved {
 			a.budget.reason = fmt.Sprintf("a checkout value expands past %d bytes", maxResolved)
 			return ref
 		}
-		return owner.resolve(text, ownerJob, ownerIdx, depth+1, size)
+		open[key] = true
+		defer delete(open, key)
+		return owner.resolve(text, ownerJob, ownerIdx, depth+1, size, open)
 	})
 }
 
 // refText finds the text behind one reference and the scope that text reads from.
 func (a *auditor) refText(scope, name string, job *workflow.Job, idx int) (string, *auditor, *workflow.Job, int, bool) {
 	if scope == "env" {
-		envs, _ := a.stepEnvs(job, idx)
-		for _, m := range append(envs, job.Env, a.wf.Env) {
+		envs, at := a.stepEnvs(job, idx)
+		for level, m := range envs {
 			if in, ok := lookup(m, name); ok {
-				return in.Value, a, job, idx, true
+				return in.Value, a, job, at[level], true
+			}
+		}
+		// Job and workflow env read the scope outside every composite action.
+		top := idx
+		if len(at) > 0 {
+			top = at[len(at)-1]
+		}
+		for _, m := range []map[string]workflow.Input{job.Env, a.wf.Env} {
+			if in, ok := lookup(m, name); ok {
+				return in.Value, a, job, top, true
 			}
 		}
 		return "", nil, nil, 0, false
@@ -601,11 +631,29 @@ func (a *auditor) refText(scope, name string, job *workflow.Job, idx int) (strin
 func withPaths(value string) string {
 	var paths []string
 	for _, body := range templateBodies(value) {
-		for _, p := range flowPaths(body) {
-			paths = append(paths, strings.Join(p, "."))
+		for _, part := range templateParts(body) {
+			for _, p := range flowPaths(part) {
+				paths = append(paths, strings.Join(p, "."))
+			}
 		}
 	}
 	return value + " " + strings.Join(paths, " ")
+}
+
+// templateParts splits a body where a resolved reference left a template inside the
+// template that read it. `${{` inside a string is only text.
+func templateParts(body string) []string {
+	var parts []string
+	inString, start := false, 0
+	for j := 0; j < len(body); j++ {
+		if body[j] == '\'' {
+			inString = !inString
+		} else if !inString && strings.HasPrefix(body[j:], "${{") {
+			parts = append(parts, body[start:j])
+			start = j + 3
+		}
+	}
+	return append(parts, body[start:])
 }
 
 // untrustedInput finds attacker-written text in the agent's inputs, for an event
@@ -676,14 +724,7 @@ func (a *auditor) lineIn(job *workflow.Job, idx int, ownStep bool, line int) int
 }
 
 func (a *auditor) fetchesUntrusted(s workflow.Step) bool {
-	text := s.Run
-	for _, in := range s.With {
-		text += " " + in.Value
-	}
-	for _, in := range s.Env {
-		text += " " + in.Value
-	}
-	return a.reg.UntrustedFetch.MatchString(text)
+	return a.reg.UntrustedFetch.MatchString(joinInputs(s.Run, " ", s.With, s.Env))
 }
 
 // Power resolves what an agent step can do from its inputs.

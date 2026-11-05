@@ -172,9 +172,20 @@ const commandStart = `(?im)(?:^|[|;&(\x60]|\b(?:if|then|else|do|while|until)\s|!
 
 const shellAssign = `(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)`
 
-// shellNoise holds what would hide a command or fake one: comments and the
-// backslash that continues it on the next line.
+// shellNoise is the backslash that continues a command on the next line.
 var shellNoise = strings.NewReplacer("\\\n", " ")
+
+// WithoutComments blanks whole-line shell comments. The lines stay, so a
+// continuation before a comment cannot swallow the command after it.
+func WithoutComments(script string) string {
+	lines := strings.Split(script, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			lines[i] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
+}
 
 // NarrowedBy reports whether a committed config restricts what the agent can run.
 // Only the top-level key applies: the same words under another key, or in a comment,
@@ -196,13 +207,8 @@ func (r *Registry) FindRuns(script string) []*Agent {
 	if script == "" {
 		return nil
 	}
-	var kept []string
-	for _, line := range strings.Split(shellNoise.Replace(script), "\n") {
-		if !strings.HasPrefix(strings.TrimSpace(line), "#") {
-			kept = append(kept, line)
-		}
-	}
-	text := strings.Join(kept, "\n")
+	// Comments first: the shell ends one at its newline, even after a backslash.
+	text := shellNoise.Replace(WithoutComments(script))
 	var out []*Agent
 	for _, a := range r.Agents {
 		if a.run != nil && a.run.MatchString(text) {

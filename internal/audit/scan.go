@@ -8,6 +8,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/somaz94/agentic-workflow-guard/internal/registry"
 	"github.com/somaz94/agentic-workflow-guard/internal/workflow"
@@ -110,13 +111,13 @@ func ScanRepo(reg *registry.Registry, root string, ignore []string, repo string)
 		rel := ".github/workflows/" + e.Name()
 		data, err := read(rel)
 		if err != nil {
-			r.Warnings = append(r.Warnings, fmt.Sprintf("%s: %v", rel, err))
+			warn(fmt.Sprintf("%s: %v", rel, err))
 			continue
 		}
 		wf, err := workflow.Parse(data)
 		if err != nil {
 			b.noteParse(rel, err)
-			r.Warnings = append(r.Warnings, fmt.Sprintf("%s: %v", rel, err))
+			warn(fmt.Sprintf("%s: %v", rel, err))
 			continue
 		}
 		r.Files++
@@ -141,11 +142,15 @@ func ScanRepo(reg *registry.Registry, root string, ignore []string, repo string)
 	for _, c := range configFiles {
 		data, err := read(c.path)
 		if err != nil {
+			// ENOTDIR is a file named like the config's directory, so no config is there.
+			if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+				warn(fmt.Sprintf("%s: %v", c.path, err))
+			}
 			continue
 		}
 		found, err := c.audit(reg, c.path, data)
 		if err != nil {
-			r.Warnings = append(r.Warnings, fmt.Sprintf("%s: %v", c.path, err))
+			warn(fmt.Sprintf("%s: %v", c.path, err))
 			continue
 		}
 		r.Files++

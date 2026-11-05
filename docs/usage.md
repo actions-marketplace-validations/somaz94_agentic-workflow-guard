@@ -36,7 +36,7 @@ When `path` is the checkout of the repository the run belongs to, the repository
 
 A file that cannot be parsed becomes a warning, is listed in the job summary and is left out of the count of scanned files, and the scan continues. A symlink pointing outside `path` is not read.
 
-The tree may come from a fork, so a scan has limits on file size, YAML alias expansion, call depth, followed calls, steps per job and time. No ordinary repository reaches them. Reaching one fails the step whatever `fail_on` says, because a partial scan must not read as a clean one.
+The tree may come from a fork, so a scan has limits on file size, YAML alias expansion, call depth, followed calls, steps per job, reference chains and time. No ordinary repository reaches them. Reaching one fails the step whatever `fail_on` says, because a partial scan must not read as a clean one.
 
 <br/>
 

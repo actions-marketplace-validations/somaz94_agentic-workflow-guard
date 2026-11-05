@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/somaz94/agentic-workflow-guard/internal/workflow"
 )
@@ -272,6 +273,61 @@ func TestCheckoutRefResolvesInEachCallersScope(t *testing.T) {
 	got, _ := follow(t, files, mainWF)
 	if s := summarize(got); !reflect.DeepEqual(s, []string{"medium untrusted-checkout " + act}) {
 		t.Errorf("got %v", s)
+	}
+}
+
+func TestCheckoutRefThroughNestedComposites(t *testing.T) {
+	files := map[string]string{
+		mainWF: "on: pull_request_target\npermissions: {}\njobs:\n  a:\n    steps:\n      - uses: ./c0\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n",
+	}
+	const last = 8
+	for i := range last {
+		files[fmt.Sprintf("c%d/action.yml", i)] = fmt.Sprintf("runs:\n  using: composite\n  steps:\n    - uses: ./c%d\n      with:\n        ref: ${{ inputs.ref }}\n", i+1)
+	}
+	files[fmt.Sprintf("c%d/action.yml", last)] = "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v7\n      with:\n        ref: ${{ inputs.ref }}\n    - uses: actions/ai-inference@v2\n"
+	got, _ := follow(t, files, mainWF)
+	if s := summarize(got); !reflect.DeepEqual(s, []string{fmt.Sprintf("medium untrusted-checkout c%d/action.yml", last)}) {
+		t.Errorf("got %v", s)
+	}
+}
+
+func TestCheckoutRefReadsEnvInTheScopeThatWroteIt(t *testing.T) {
+	const checkout = "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v7\n      with:\n        ref: ${{ env.R }}\n    - uses: actions/ai-inference@v2\n"
+	for name, c := range map[string]struct {
+		files map[string]string
+		want  string
+	}{
+		"a calling step's env": {map[string]string{
+			mainWF:             "on: pull_request_target\npermissions: {}\njobs:\n  a:\n    steps:\n      - uses: ./outer\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n",
+			"outer/action.yml": "inputs:\n  ref: {}\nruns:\n  using: composite\n  steps:\n    - uses: ./inner\n      env:\n        R: ${{ inputs.ref }}\n",
+			"inner/action.yml": checkout,
+		}, "inner/action.yml"},
+		"a called job's env": {map[string]string{
+			mainWF:           "on: pull_request_target\npermissions: {}\njobs:\n  c:\n    uses: ./.github/workflows/agent.yml\n    with:\n      sha: ${{ github.event.pull_request.head.sha }}\n",
+			agentWF:          "on: workflow_call\njobs:\n  r:\n    env:\n      R: ${{ inputs.sha }}\n    steps:\n      - uses: ./act\n",
+			"act/action.yml": checkout,
+		}, "act/action.yml"},
+	} {
+		got, _ := follow(t, c.files, mainWF)
+		if s := summarize(got); !reflect.DeepEqual(s, []string{"medium untrusted-checkout " + c.want}) {
+			t.Errorf("%s: got %v", name, s)
+		}
+	}
+}
+
+func TestResolveStopsOnceTheBudgetIsSpent(t *testing.T) {
+	wf, err := workflow.Parse([]byte("on: push\nenv:\n  R: head\njobs:\n  a:\n    steps:\n      - run: x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newAuditor(reg(t), nil, "w.yml", wf, nil, func(string) {})
+	job := a.flat(wf.Jobs[0])
+	if got := a.resolved("env.R", job, 0); got != "head" {
+		t.Fatalf("got %q", got)
+	}
+	a.budget = &budget{deadline: time.Now().Add(-time.Second)}
+	if got := a.resolved("env.R", job, 0); got != "env.R" {
+		t.Errorf("got %q", got)
 	}
 }
 
