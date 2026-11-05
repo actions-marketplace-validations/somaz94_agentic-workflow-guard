@@ -12,12 +12,20 @@ import (
 	"github.com/somaz94/agentic-workflow-guard/internal/output"
 )
 
-// Text from a hostile tree stays on its line, or a file name or config value quoted
-// in a finding could start new Markdown in the summary.
-var (
-	oneLine   = strings.NewReplacer("\r", " ", "\n", " ")
-	tableCell = strings.NewReplacer("\r", " ", "\n", " ", "|", "\\|")
+// summaryText renders text from a hostile tree as text: a file name or config value
+// quoted in a finding could otherwise start a heading, a table cell, a link or HTML
+// in the summary. An entity shows its character and can never act as Markdown. An
+// email address links even from entities, so an empty comment splits it.
+var summaryText = strings.NewReplacer(
+	"\r", " ", "\n", " ",
+	"&", "&amp;", "<", "&lt;", ">", "&gt;", "|", "&#124;", "\\", "&#92;", "`", "&#96;",
+	"*", "&#42;", "_", "&#95;", "~", "&#126;", "[", "&#91;", "]", "&#93;", "(", "&#40;", ")", "&#41;",
+	"!", "&#33;", "#", "&#35;", ":", "&#58;", ".", "&#46;", "$", "&#36;", "@", "<!-- -->&#64;",
 )
+
+// summaryLimit keeps a hostile tree from erasing the summary: GitHub drops one over
+// 1 MiB whole, and an entity is longer than the character it shows.
+const summaryLimit = 1 << 19
 
 // Annotations writes one workflow command per finding.
 func Annotations(w io.Writer, r *audit.Report) {
@@ -43,14 +51,24 @@ func Summary(r *audit.Report) string {
 		r.Files, r.Count(audit.High), r.Count(audit.Medium), r.Count(audit.Low))
 	if len(r.Findings) > 0 {
 		b.WriteString("\n| Severity | Rule | Location | Finding |\n|---|---|---|---|\n")
-		for _, f := range r.Findings {
-			fmt.Fprintf(&b, "| %s | `%s` | `%s:%d` | %s |\n", f.Severity, f.Rule, tableCell.Replace(f.File), f.Line, tableCell.Replace(f.Message))
+		for i, f := range r.Findings {
+			row := fmt.Sprintf("| %s | `%s` | <code>%s:%d</code> | %s |\n", f.Severity, f.Rule, summaryText.Replace(f.File), f.Line, summaryText.Replace(f.Message))
+			if b.Len()+len(row) > summaryLimit {
+				fmt.Fprintf(&b, "\n%d more finding(s) are in the log and SARIF; this summary reached its size limit.\n", len(r.Findings)-i)
+				break
+			}
+			b.WriteString(row)
 		}
 	}
 	if len(r.Warnings) > 0 {
 		b.WriteString("\nNot audited, so the counts above say nothing about these:\n\n")
-		for _, m := range r.Warnings {
-			fmt.Fprintf(&b, "- %s\n", oneLine.Replace(m))
+		for i, m := range r.Warnings {
+			line := fmt.Sprintf("- %s\n", summaryText.Replace(m))
+			if b.Len()+len(line) > summaryLimit {
+				fmt.Fprintf(&b, "\n%d more warning(s) are in the log; this summary reached its size limit.\n", len(r.Warnings)-i)
+				break
+			}
+			b.WriteString(line)
 		}
 	}
 	return b.String()

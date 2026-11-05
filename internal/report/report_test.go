@@ -43,7 +43,7 @@ func TestAnnotations(t *testing.T) {
 
 func TestSummary(t *testing.T) {
 	s := Summary(sample())
-	for _, want := range []string{"Scanned 2 file(s): 1 high, 1 medium, 1 low.", "`broad-tools`", "`b.yml:4`", `next \| pipe`} {
+	for _, want := range []string{"Scanned 2 file(s): 1 high, 1 medium, 1 low.", "`broad-tools`", "<code>b&#46;yml:4</code>", "next &#124; pipe"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("summary missing %q:\n%s", want, s)
 		}
@@ -66,8 +66,31 @@ func TestSummaryKeepsHostileTextInItsRow(t *testing.T) {
 	if strings.Contains(s, "\r") {
 		t.Errorf("carriage return in:\n%s", s)
 	}
-	if !strings.Contains(s, `a # f\|x.yml`) {
+	if !strings.Contains(s, "<code>a &#35; f&#124;x&#46;yml:1</code>") {
 		t.Errorf("file not escaped:\n%s", s)
+	}
+	for _, active := range []string{"[", "](", "<img", "**", "__", "~~", "http:", "www.", "$x"} {
+		got := Summary(&audit.Report{Findings: []audit.Finding{{Rule: audit.RuleBroadTools, Severity: audit.High, File: "f", Line: 1,
+			Message: "[click](http://example.test) <img src=x> **a** __b__ ~~c~~ www.example.test `d` $x^2$"}}})
+		if strings.Contains(got, active) {
+			t.Errorf("%q still active in:\n%s", active, got)
+		}
+	}
+}
+
+func TestSummaryStaysWithinItsLimit(t *testing.T) {
+	long := strings.Repeat("@", 200_000)
+	var r audit.Report
+	for range 10 {
+		r.Findings = append(r.Findings, audit.Finding{Rule: audit.RuleBroadTools, Severity: audit.High, File: "f", Line: 1, Message: long})
+		r.Warnings = append(r.Warnings, long)
+	}
+	s := Summary(&r)
+	if len(s) > summaryLimit+1024 {
+		t.Errorf("summary is %d bytes", len(s))
+	}
+	if !strings.Contains(s, "10 more finding(s)") || !strings.Contains(s, "10 more warning(s)") {
+		t.Errorf("summary hides what it left out: %s", s[len(s)-300:])
 	}
 }
 
@@ -108,7 +131,7 @@ func TestSARIF(t *testing.T) {
 
 func TestSummaryNamesWhatWasNotAudited(t *testing.T) {
 	got := Summary(&audit.Report{Warnings: []string{"bad.yml: parse\nerror"}})
-	if !strings.Contains(got, "Not audited") || !strings.Contains(got, "bad.yml: parse error") {
+	if !strings.Contains(got, "Not audited") || !strings.Contains(got, "bad&#46;yml&#58; parse error") {
 		t.Errorf("summary = %s", got)
 	}
 	if strings.Contains(Summary(&audit.Report{}), "Not audited") {
