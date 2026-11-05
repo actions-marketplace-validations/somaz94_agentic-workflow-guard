@@ -178,15 +178,23 @@ var shellNoise = strings.NewReplacer("\\\n", " ")
 // in a string, an expansion, arithmetic or a here-document is text, so it follows
 // each of them. Newlines stay, so a continuation before a comment cannot swallow the
 // command after it.
-func WithoutComments(script string) string {
+func WithoutComments(script string) string { return withoutComments(script, true) }
+
+// CommentReadings lexes script both ways a `<<` under an open `[` can read, a shift in
+// `a[1<<2]=3` and a here-document in `echo a[ <<EOF`. A lexer cannot tell them apart.
+func CommentReadings(script string) []string {
+	return []string{withoutComments(script, true), withoutComments(script, false)}
+}
+
+func withoutComments(script string, shifts bool) string {
 	var b strings.Builder
 	b.Grow(len(script))
 	var quote byte
 	var open []shellFrame
 	var bodies []hereBody
-	wordStart := true
+	wordStart, unclosed, bracket := true, false, false
 	enter := func(closer byte, arith bool) {
-		open = append(open, shellFrame{quote, closer, arith})
+		open = append(open, shellFrame{quote: quote, closer: closer, arith: arith})
 		quote = 0
 	}
 	leave := func() {
@@ -202,6 +210,12 @@ func WithoutComments(script string) string {
 	for i := 0; i < len(script); i++ {
 		c := script[i]
 		rest := script[i:]
+		switch c {
+		case '[':
+			bracket = quote == 0 && opensSubscript(script[:i])
+		case ']', '\n':
+			bracket = false
+		}
 		switch {
 		case quote == '\'':
 			if c == '\'' {
@@ -221,12 +235,18 @@ func WithoutComments(script string) string {
 			b.WriteByte(script[i])
 			wordStart = wordStart && script[i] == '\n'
 			continue
-		case strings.HasPrefix(rest, "${{") && templateLen(rest) > 0:
-			// The runner fills this in before any shell reads it.
+		case !unclosed && strings.HasPrefix(rest, "${{"):
+			// The runner fills this in before any shell reads it. An empty value leaves
+			// the next `#` at a word start, so wordStart stays.
 			n := templateLen(rest)
+			if n == 0 {
+				// The runner refuses the file, and scanning again from each `${{` is quadratic.
+				unclosed = true
+				i--
+				continue
+			}
 			i += n - 1
 			b.WriteString(rest[:n])
-			wordStart = false
 			continue
 		case strings.HasPrefix(rest, "$(("):
 			enter(')', true)
@@ -237,6 +257,7 @@ func WithoutComments(script string) string {
 			continue
 		case strings.HasPrefix(rest, "$("):
 			enter(')', false)
+			open[len(open)-1].subst = true
 			i++
 			b.WriteString("$(")
 			wordStart = true
@@ -272,7 +293,9 @@ func WithoutComments(script string) string {
 		case c == '\'' || c == '"':
 			quote = c
 		case c == '(' && top().closer != '}':
+			procSubst := i > 0 && (script[i-1] == '<' || script[i-1] == '>')
 			enter(')', top().arith || wordStart && strings.HasPrefix(rest, "(("))
+			open[len(open)-1].subst = procSubst
 		case c == ')' && top().closer == ')':
 			leave()
 		case c == '#' && wordStart && top().closer != '}':
@@ -291,7 +314,7 @@ func WithoutComments(script string) string {
 			b.WriteString("<<<")
 			wordStart = true
 			continue
-		case c == '<' && !top().arith && top().closer != '}' && strings.HasPrefix(rest, "<<") && !inSubscript(script[:i]):
+		case c == '<' && !top().arith && top().closer != '}' && strings.HasPrefix(rest, "<<") && !(shifts && bracket):
 			if body, n := parseHereDoc(rest); n > 0 {
 				bodies = append(bodies, body)
 				i += n - 1
@@ -301,7 +324,8 @@ func WithoutComments(script string) string {
 			}
 		case c == '\n' && len(bodies) > 0:
 			b.WriteByte(c)
-			i = copyHereDocs(&b, script, i+1, bodies, top().closer == ')') - 1
+			inSubst := slices.ContainsFunc(open, func(f shellFrame) bool { return f.subst })
+			i = copyHereDocs(&b, script, i+1, bodies, top().closer, inSubst) - 1
 			bodies = nil
 			wordStart = true
 			continue
@@ -319,6 +343,7 @@ const ansiQuote = '$'
 type shellFrame struct {
 	quote, closer byte
 	arith         bool // a `<<` in it shifts bits
+	subst         bool // `$(`, `<(` or `>(`, whose `)` can end a here-document
 }
 
 // templateLen is the length of the `${{ }}` at the start of s, 0 when it never ends.
@@ -334,19 +359,24 @@ func templateLen(s string) int {
 	return 0
 }
 
-// inSubscript reports a `[` still open just before the end of s, as in `a[1<<2]=3` or
-// `$[1<<2]`, where `<<` shifts bits. Only a short stretch is read, so a script of
-// shifts stays linear.
-func inSubscript(s string) bool {
-	s = s[max(len(s)-64, 0):]
-	open := strings.LastIndexByte(s, '[')
-	return open > strings.LastIndexByte(s, ']') && open > strings.LastIndexByte(s, '\n')
+// opensSubscript reports a `[` after `$` or after a name that starts a word. One in a
+// string or after other text, as in `tr -d '[' <<EOF`, leaves a `<<` a here-document.
+func opensSubscript(s string) bool {
+	if strings.HasSuffix(s, "$") {
+		return true
+	}
+	name := strings.TrimRight(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+	if len(name) == len(s) || s[len(name)] >= '0' && s[len(name)] <= '9' {
+		return false
+	}
+	return name == "" || strings.IndexByte(" \t\n;&|(`", name[len(name)-1]) >= 0
 }
 
 // hereBody is what ends a here-document, and whether tabs may lead it.
 type hereBody struct {
-	word string
-	tabs bool
+	word   string
+	tabs   bool
+	quoted bool // no backslash joins its lines
 }
 
 // parseHereDoc reads the `<<` at the start of s. Its word loses its quotes, as the
@@ -366,6 +396,7 @@ func parseHereDoc(s string) (hereBody, int) {
 	for ; i < len(s) && strings.IndexByte(" \t\n;&|()<>", s[i]) < 0; i++ {
 		switch s[i] {
 		case '\'', '"':
+			body.quoted = true
 			end := strings.IndexByte(s[i+1:], s[i])
 			if end < 0 || strings.IndexByte(s[i+1:i+1+end], '\n') >= 0 {
 				return hereBody{}, 0
@@ -373,6 +404,7 @@ func parseHereDoc(s string) (hereBody, int) {
 			word.WriteString(s[i+1 : i+1+end])
 			i += end + 1
 		case '\\':
+			body.quoted = true
 			if i+1 < len(s) {
 				i++
 			}
@@ -390,18 +422,37 @@ func parseHereDoc(s string) (hereBody, int) {
 
 // copyHereDocs writes each body through its terminator and returns where it ended.
 // Its `#` lines go: `bash <<EOF` runs them as comments, and to any other reader of
-// the body they are no command either.
-func copyHereDocs(b *strings.Builder, script string, pos int, bodies []hereBody, inSubst bool) int {
+// the body they are no command either. Inside `$(`, a line opening with the word ends
+// the body if a `)` follows anywhere on it, and what follows the word is shell again.
+// Inside backticks the shell cuts the string first, so the closing backtick ends it.
+func copyHereDocs(b *strings.Builder, script string, pos int, bodies []hereBody, closer byte, inSubst bool) int {
 	for _, body := range bodies {
 		for pos < len(script) {
-			end := strings.IndexByte(script[pos:], '\n')
+			start := pos
 			next := len(script)
-			if end >= 0 {
+			if end := strings.IndexByte(script[pos:], '\n'); end >= 0 {
 				next = pos + end + 1
+			}
+			// An unquoted body joins a line ending in a backslash to the next.
+			for !body.quoted && next < len(script) && strings.HasSuffix(script[pos:next], "\\\n") && oddBackslashes(script[pos:next-1]) {
+				if end := strings.IndexByte(script[next:], '\n'); end >= 0 {
+					next += end + 1
+				} else {
+					next = len(script)
+				}
 			}
 			line := script[pos:next]
 			pos = next
+			if closer == '`' {
+				if j := unescapedBacktick(line); j >= 0 {
+					b.WriteString(line[:j])
+					return start + j
+				}
+			}
 			text := strings.TrimSuffix(line, "\n")
+			if !body.quoted {
+				text = strings.ReplaceAll(text, "\\\n", "")
+			}
 			if body.tabs {
 				text = strings.TrimLeft(text, "\t")
 			}
@@ -409,19 +460,38 @@ func copyHereDocs(b *strings.Builder, script string, pos int, bodies []hereBody,
 				b.WriteString(line)
 				break
 			}
-			// `$(cat <<EOF` can close on `EOF)`, which ends both.
-			if inSubst && strings.HasPrefix(text, body.word+")") {
+			if inSubst && strings.HasPrefix(text, body.word) && strings.IndexByte(text[len(body.word):], ')') >= 0 {
 				keep := len(strings.TrimSuffix(line, "\n")) - len(text) + len(body.word)
 				b.WriteString(line[:keep])
-				return next - len(line) + keep
+				if text[len(body.word)] != ')' {
+					b.WriteByte('\n')
+				}
+				pos = start + keep
+				break
 			}
 			if strings.HasPrefix(strings.TrimSpace(line), "#") {
-				line = line[len(strings.TrimSuffix(line, "\n")):]
+				line = strings.Repeat("\n", strings.Count(line, "\n"))
 			}
 			b.WriteString(line)
 		}
 	}
 	return pos
+}
+
+func oddBackslashes(s string) bool {
+	return (len(s)-len(strings.TrimRight(s, "\\")))%2 == 1
+}
+
+func unescapedBacktick(s string) int {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			i++
+		case '`':
+			return i
+		}
+	}
+	return -1
 }
 
 // WithoutCommentLines blanks only lines that are wholly a comment.
@@ -458,14 +528,16 @@ func (r *Registry) FindRuns(script string) []*Agent {
 	// Comments first: the shell ends one at its newline, even after a backslash. A
 	// script built to fool the quote tracking must not hide an agent, so the plainer
 	// reading counts too.
-	text := shellNoise.Replace(WithoutComments(script))
+	readings := CommentReadings(script)
+	text := shellNoise.Replace(readings[0])
+	other := shellNoise.Replace(readings[1])
 	plain := shellNoise.Replace(WithoutCommentLines(script))
 	// A comment the tracking missed can end in a backslash and join the next command
 	// to itself, so one reading cuts every comment a shell could see.
 	cut := shellNoise.Replace(wordComment.ReplaceAllString(script, "$1"))
 	var out []*Agent
 	for _, a := range r.Agents {
-		if a.run != nil && (a.run.MatchString(text) || plain != text && a.run.MatchString(plain) || cut != text && a.run.MatchString(cut)) {
+		if a.run != nil && (a.run.MatchString(text) || other != text && a.run.MatchString(other) || plain != text && a.run.MatchString(plain) || cut != text && a.run.MatchString(cut)) {
 			out = append(out, a)
 		}
 	}

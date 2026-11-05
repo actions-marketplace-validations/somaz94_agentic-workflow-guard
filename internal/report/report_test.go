@@ -86,11 +86,21 @@ func TestSummaryStaysWithinItsLimit(t *testing.T) {
 		r.Warnings = append(r.Warnings, long)
 	}
 	s := Summary(&r)
-	if len(s) > summaryLimit+1024 {
+	if len(s) > warningLimit+1024 {
 		t.Errorf("summary is %d bytes", len(s))
 	}
 	if !strings.Contains(s, "10 more finding(s)") || !strings.Contains(s, "10 more warning(s)") {
 		t.Errorf("summary hides what it left out: %s", s[len(s)-300:])
+	}
+}
+
+func TestSummaryKeepsSmallRowsPastAnOversizedOne(t *testing.T) {
+	s := Summary(&audit.Report{Findings: []audit.Finding{
+		{Rule: audit.RuleBroadTools, Severity: audit.High, File: "big", Line: 1, Message: strings.Repeat("!", 120_000)},
+		{Rule: audit.RuleBroadTools, Severity: audit.High, File: "small", Line: 2, Message: "m"},
+	}})
+	if !strings.Contains(s, "<code>small:2</code>") || !strings.Contains(s, "1 more finding(s)") {
+		t.Errorf("summary = %s", s[:min(len(s), 400)])
 	}
 }
 

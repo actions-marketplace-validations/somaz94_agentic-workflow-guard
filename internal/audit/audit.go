@@ -289,7 +289,12 @@ func (a *auditor) authorizes(s workflow.Step) bool {
 	if s.Run != "" {
 		with = nil
 	}
-	return a.reg.Authorization.MatchString(joinInputs(registry.WithoutCommentLines(registry.WithoutComments(s.Run))+" "+s.Uses, " ", with))
+	for _, text := range registry.CommentReadings(s.Run) {
+		if !a.reg.Authorization.MatchString(joinInputs(registry.WithoutCommentLines(text)+" "+s.Uses, " ", with)) {
+			return false
+		}
+	}
+	return true
 }
 
 // joinInputs appends each value in sorted order: map order would change which file
@@ -745,7 +750,7 @@ func Power(reg *registry.Registry, agent *registry.Agent, st workflow.Step) regi
 		return powerOf(reg, agent, st)
 	}
 	worst := registry.Limited
-	for _, text := range []string{registry.WithoutComments(in.Value), registry.WithoutCommentLines(in.Value)} {
+	for _, text := range append(registry.CommentReadings(in.Value), registry.WithoutCommentLines(in.Value)) {
 		in.Value = text
 		st.With = map[string]workflow.Input{registry.RunInput: in}
 		worst = max(worst, powerOf(reg, agent, st))

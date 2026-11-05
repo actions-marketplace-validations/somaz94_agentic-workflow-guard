@@ -83,6 +83,7 @@ This is static analysis, and a clean result is not a proof of safety.
 
 - A reusable workflow or action in another repository is not followed, because reading it would need the network
 - A command-line agent is recognized by its command in a `run:` step, so one behind a script file or an unusual wrapper is not detected
+- A command or comment character produced by an expression is not seen, because its value is known only at run time
 - Compiled GitHub Agentic Workflows (a `.lock.yml` next to its `.md` source) are skipped: they are generated, and their compiler decides the gating
 - A committed agent config is read only for a pattern that restricts it, and per-agent config files and permissions built at run time are not read, so a wide default may be overstated
 - An authorization check is recognized from what a step mentions, so a mention that decides nothing can lower a severity by one level

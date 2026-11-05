@@ -27,6 +27,9 @@ var summaryText = strings.NewReplacer(
 // 1 MiB whole, and an entity is longer than the character it shows.
 const summaryLimit = 1 << 19
 
+// warningLimit keeps findings from pushing out the list of what was not audited.
+const warningLimit = summaryLimit + summaryLimit/2
+
 // Annotations writes one workflow command per finding.
 func Annotations(w io.Writer, r *audit.Report) {
 	levels := map[audit.Severity]string{audit.High: "error", audit.Medium: "warning", audit.Low: "notice"}
@@ -51,24 +54,32 @@ func Summary(r *audit.Report) string {
 		r.Files, r.Count(audit.High), r.Count(audit.Medium), r.Count(audit.Low))
 	if len(r.Findings) > 0 {
 		b.WriteString("\n| Severity | Rule | Location | Finding |\n|---|---|---|---|\n")
-		for i, f := range r.Findings {
+		omitted := 0
+		for _, f := range r.Findings {
 			row := fmt.Sprintf("| %s | `%s` | <code>%s:%d</code> | %s |\n", f.Severity, f.Rule, summaryText.Replace(f.File), f.Line, summaryText.Replace(f.Message))
 			if b.Len()+len(row) > summaryLimit {
-				fmt.Fprintf(&b, "\n%d more finding(s) are in the log and SARIF; this summary reached its size limit.\n", len(r.Findings)-i)
-				break
+				omitted++
+				continue
 			}
 			b.WriteString(row)
+		}
+		if omitted > 0 {
+			fmt.Fprintf(&b, "\n%d more finding(s) are in the log, and in the SARIF file when one is written; this summary reached its size limit.\n", omitted)
 		}
 	}
 	if len(r.Warnings) > 0 {
 		b.WriteString("\nNot audited, so the counts above say nothing about these:\n\n")
-		for i, m := range r.Warnings {
+		omitted := 0
+		for _, m := range r.Warnings {
 			line := fmt.Sprintf("- %s\n", summaryText.Replace(m))
-			if b.Len()+len(line) > summaryLimit {
-				fmt.Fprintf(&b, "\n%d more warning(s) are in the log; this summary reached its size limit.\n", len(r.Warnings)-i)
-				break
+			if b.Len()+len(line) > warningLimit {
+				omitted++
+				continue
 			}
 			b.WriteString(line)
+		}
+		if omitted > 0 {
+			fmt.Fprintf(&b, "\n%d more warning(s) are in the log; this summary reached its size limit.\n", omitted)
 		}
 	}
 	return b.String()

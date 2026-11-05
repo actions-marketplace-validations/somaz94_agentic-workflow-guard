@@ -3,6 +3,7 @@ package registry
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadAndFind(t *testing.T) {
@@ -141,6 +142,14 @@ func TestWithoutComments(t *testing.T) {
 		"cat << \\E\nit's\nE\nb # d":               "cat << \\E\nit's\nE\nb ",
 		"cat <<'open\nb # d":                       "cat <<'open\nb # d",
 		"cat <<\nb # d":                            "cat <<\nb ",
+		"tr -d '[' <<EOF\nit's\nEOF\nb # d":        "tr -d '[' <<EOF\nit's\nEOF\nb ",
+		"x=$(cat <<EOF\nEOFX) # c\nb # d":          "x=$(cat <<EOF\nEOF\nX) \nb ",
+		"(cat <<E\nE)\nit's\nE\n) # c":             "(cat <<E\nE)\nit's\nE\n) ",
+		"x=`cat <<E\nhi\nE`; b # d":                "x=`cat <<E\nhi\nE`; b ",
+		"a ${{ b }}# c":                            "a ${{ b }}",
+		"cat <<E\nabc\\\nE\nit's\nE\nb # d":        "cat <<E\nabc\\\nE\nit's\nE\nb ",
+		"cat <<EOF\nEO\\\nF\nb # d":                "cat <<EOF\nEO\\\nF\nb ",
+		"cat <<'E'\nabc\\\nE\nb # d":               "cat <<'E'\nabc\\\nE\nb ",
 		"a # never ends":                           "a ",
 	} {
 		if got := WithoutComments(in); got != want {
@@ -155,13 +164,21 @@ func FuzzWithoutComments(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, s string) {
 		got := WithoutComments(s)
-		if strings.Count(got, "\n") != strings.Count(s, "\n") {
-			t.Errorf("WithoutComments(%q) = %q changed the line count", s, got)
+		if strings.Count(got, "\n") < strings.Count(s, "\n") {
+			t.Errorf("WithoutComments(%q) = %q lost a line", s, got)
 		}
-		if len(got) > len(s) {
+		if len(got) > 2*len(s) {
 			t.Errorf("WithoutComments(%q) = %q grew", s, got)
 		}
 	})
+}
+
+func TestWithoutCommentsStaysLinearOnUnclosedTemplates(t *testing.T) {
+	start := time.Now()
+	WithoutComments(strings.Repeat("${{ ", 1<<18))
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("took %s", took)
+	}
 }
 
 func TestFindRunsSeesPastAComment(t *testing.T) {
@@ -178,6 +195,10 @@ func TestFindRunsSeesPastAComment(t *testing.T) {
 		"echo \"`echo \"a # b\"`\" ; claude -p x",
 		"cat <<EOF\nit's\nEOF\necho hi # note \\\nclaude -p x",
 		"bash <<'EOF'\n# note \\\nclaude -p x\nEOF",
+		"echo \"[\" && cat <<EOF\nit's\nEOF\n: '\n# '; claude -p x",
+		"x=$(cat <<EOF\nEOF claude -p x)",
+		"(cat <<EOF\nEOF)\nit's\nEOF\n)\necho hi # note \\\nclaude -p x",
+		"cat <<E\nabc\\\nE\nit's\nE\necho hi # note \\\nclaude -p x",
 		`: "$(case a in a) echo "b # c";; esac)"; claude -p x`,
 		"name=\"${x%% (*}\"\necho hi # note \\\nclaude -p x",
 		"((echo a # (\n) | cat)\necho hi # note \\\nclaude -p x",
