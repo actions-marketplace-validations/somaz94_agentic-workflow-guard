@@ -97,19 +97,28 @@ func (w *Workflow) JobByName(name string) *Job {
 	return nil
 }
 
-// Parse reads the first YAML document of a workflow file.
-func Parse(data []byte) (*Workflow, error) {
+// parseRoot is the one way into hostile YAML, so nothing is read before the alias
+// bound has held.
+func parseRoot(data []byte, what string) (*yaml.Node, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("parse yaml: %w", err)
 	}
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("not a workflow: top level is not a mapping")
+		return nil, fmt.Errorf("not %s: top level is not a mapping", what)
 	}
 	if expanded(&doc, map[*yaml.Node]int64{}) > maxExpanded {
 		return nil, ErrTooLarge
 	}
-	root := doc.Content[0]
+	return doc.Content[0], nil
+}
+
+// Parse reads the first YAML document of a workflow file.
+func Parse(data []byte) (*Workflow, error) {
+	root, err := parseRoot(data, "a workflow")
+	if err != nil {
+		return nil, err
+	}
 	w := &Workflow{
 		Name:        scalar(get(root, "name")),
 		RunSources:  list(get(get(get(root, "on"), "workflow_run"), "workflows")),
@@ -154,17 +163,10 @@ func expanded(n *yaml.Node, memo map[*yaml.Node]int64) int64 {
 
 // ParseAction reads an `action.yml`.
 func ParseAction(data []byte) (*Action, error) {
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("parse yaml: %w", err)
+	root, err := parseRoot(data, "an action")
+	if err != nil {
+		return nil, err
 	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("not an action: top level is not a mapping")
-	}
-	if expanded(&doc, map[*yaml.Node]int64{}) > maxExpanded {
-		return nil, ErrTooLarge
-	}
-	root := doc.Content[0]
 	return &Action{Inputs: defaults(get(root, "inputs")), Steps: parseSteps(get(get(root, "runs"), "steps"))}, nil
 }
 
