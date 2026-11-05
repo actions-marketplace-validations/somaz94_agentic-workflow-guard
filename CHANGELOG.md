@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.0.3](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.2...v1.0.3) (2026-11-05)
+
+### Bug Fixes
+
+- read shell comments and summary text the way their consumers do ([f3bd8c0](https://github.com/somaz94/agentic-workflow-guard/commit/f3bd8c0fa657d7a5f5ca09a7081313357cef7ff2))
+
+### Chores
+
+- bump the action image to v1.0.3 ([6e58404](https://github.com/somaz94/agentic-workflow-guard/commit/6e58404f882f65f2d0a1d1036ae5fdc41fed2b45))
+
+### Contributors
+
+- somaz
+
+<br/>
+
 ## [v1.0.2](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.1...v1.0.2) (2026-11-05)
 
 ### Bug Fixes
