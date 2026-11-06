@@ -48,6 +48,8 @@ A command-line agent has a `run_pattern` instead of `uses`, and its inputs read 
 
 `testdata/clean`, `testdata/risky` and `testdata/indirect` are synthetic workflows that back the CI jobs. `TestFixtures` in `cmd/main_test.go` pins what they produce, and `ci.yml` and `use-action.yml` assert the same counts, so update them together. Never copy a real repository's workflow into a fixture: a finding here would publish that repository's exposure.
 
+The screenshot in the README, `docs/images/annotations.png`, is the Annotations panel of a `ci.yml` run on `main`, so every finding in it comes from these fixtures. When a rule's message changes, replace it with the same panel from a newer run.
+
 <br/>
 
 ## Release

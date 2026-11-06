@@ -8,6 +8,8 @@ A GitHub Action that audits workflows running AI agents for prompt-injection exp
 
 It reads files only. It needs no token, no API key and no network, so it runs on pull requests from forks.
 
+![Findings appear as annotations on the workflow lines that expose an AI agent: untrusted input, untrusted checkout, open invocation and broad tools](docs/images/annotations.png)
+
 <br/>
 
 ## Why
