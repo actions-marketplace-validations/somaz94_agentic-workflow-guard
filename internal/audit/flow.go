@@ -284,17 +284,15 @@ func (t *tracer) env(name string, w where) bool {
 			}
 		}
 		if w.envFloor <= len(envs) {
-			tainted := false
 			for i := range w.job.Steps[:min(w.idx, len(w.job.Steps))] {
 				for _, written := range envNames(w.job.Steps[i]) {
 					if !strings.EqualFold(written, name) || hidden[written] {
 						continue
 					}
-					tainted = tainted || t.step(where{a: w.a, job: w.job, idx: i})
+					if t.step(where{a: w.a, job: w.job, idx: i}) {
+						return true
+					}
 				}
-			}
-			if tainted {
-				return true
 			}
 			for i := range w.job.Steps[:min(w.idx, len(w.job.Steps))] {
 				for _, written := range envNames(w.job.Steps[i]) {

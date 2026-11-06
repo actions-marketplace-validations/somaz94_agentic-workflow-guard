@@ -507,12 +507,12 @@ func fromJSON(args []expr.Node) value {
 	if !ok || lit.Kind != expr.LitString {
 		return value{kind: kFree}
 	}
-	var any interface{}
-	if json.Unmarshal([]byte(lit.Text), &any) != nil {
+	var parsed any
+	if json.Unmarshal([]byte(lit.Text), &parsed) != nil {
 		return value{kind: kFree}
 	}
-	switch x := any.(type) {
-	case []interface{}:
+	switch x := parsed.(type) {
+	case []any:
 		v := value{kind: kArray}
 		for _, it := range x {
 			if s, ok := it.(string); ok {
@@ -577,12 +577,7 @@ var payloadObjects = map[string][]string{
 
 // Carries reports whether an event's payload holds the named object.
 func Carries(event, object string) bool {
-	for _, o := range payloadObjects[event] {
-		if o == object {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(payloadObjects[event], object)
 }
 
 // knownObjects are payload keys that are absent, not attacker-written, when an

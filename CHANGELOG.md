@@ -2,6 +2,76 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.0.5](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.4...v1.0.5) (2026-11-06)
+
+### Bug Fixes
+
+- keep the shell lexer linear and read here-documents the way bash 3.2 and 5 do ([e80d4cd](https://github.com/somaz94/agentic-workflow-guard/commit/e80d4cdba53db67d6d89d7ef9c88bf8b6599677f))
+
+### Chores
+
+- bump the action image to v1.0.5 ([3091bf6](https://github.com/somaz94/agentic-workflow-guard/commit/3091bf6f6ad7e740c1bb0ccae4f0c0da8f2b9436))
+
+### Contributors
+
+- somaz
+
+<br/>
+
+## [v1.0.4](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.3...v1.0.4) (2026-11-05)
+
+### Bug Fixes
+
+- stop a stray bracket or unclosed template from misleading the audit ([8719a52](https://github.com/somaz94/agentic-workflow-guard/commit/8719a52c1c07bf07c43723b233d4299cf3ff3e8d))
+
+### Chores
+
+- bump the action image to v1.0.4 ([56d6167](https://github.com/somaz94/agentic-workflow-guard/commit/56d6167294778611ebfdb67a1ee45084383e88a4))
+
+### Contributors
+
+- somaz
+
+<br/>
+
+## [v1.0.3](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.2...v1.0.3) (2026-11-05)
+
+### Bug Fixes
+
+- read shell comments and summary text the way their consumers do ([f3bd8c0](https://github.com/somaz94/agentic-workflow-guard/commit/f3bd8c0fa657d7a5f5ca09a7081313357cef7ff2))
+
+### Chores
+
+- bump the action image to v1.0.3 ([6e58404](https://github.com/somaz94/agentic-workflow-guard/commit/6e58404f882f65f2d0a1d1036ae5fdc41fed2b45))
+
+### Contributors
+
+- somaz
+
+<br/>
+
+## [v1.0.2](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.1...v1.0.2) (2026-11-05)
+
+### Bug Fixes
+
+- stop shell comments and env scope from hiding audit findings ([876a0a4](https://github.com/somaz94/agentic-workflow-guard/commit/876a0a4ca761a55b1d5bd3e5a149459557937378))
+- report audit findings a hostile workflow could hide ([4af6df0](https://github.com/somaz94/agentic-workflow-guard/commit/4af6df02f0cdc953a2a70162c56203d23f6c8e4d))
+
+### Code Refactoring
+
+- drop dead code and share the workflow command escaping ([813a88f](https://github.com/somaz94/agentic-workflow-guard/commit/813a88fd38e7002dc10a65e5a5663ddb6706fc90))
+- route workflow and action parsing through one entry point ([5f47c44](https://github.com/somaz94/agentic-workflow-guard/commit/5f47c44e84c9936033e804f3b4c4ab5bd72a0140))
+
+### Chores
+
+- bump the action image to v1.0.2 ([ab1232b](https://github.com/somaz94/agentic-workflow-guard/commit/ab1232bc811b5c23fc9b1415f09da6d960eb2f1a))
+
+### Contributors
+
+- somaz
+
+<br/>
+
 ## [v1.0.1](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.0...v1.0.1) (2026-11-04)
 
 ### Bug Fixes

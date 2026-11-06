@@ -34,7 +34,7 @@ A reusable workflow or composite action referenced with `./` is read too, and a 
 
 When `path` is the checkout of the repository the run belongs to, the repository's name is known, so `if: github.repository == 'owner/repo'` is evaluated instead of assumed true, and a copied workflow gated to another repository is not reported.
 
-A file that cannot be parsed becomes a warning, is listed in the job summary and is left out of the count of scanned files, and the scan continues. A symlink pointing outside `path` is not read.
+A file that cannot be parsed becomes a warning, is listed in the job summary and is left out of the count of scanned files, and the scan continues. A symlink pointing outside `path` is not read. A job summary that reaches its size limit says how many findings it left out; they stay in the log, and in the SARIF file when `sarif_file` is set.
 
 The tree may come from a fork, so a scan has limits on file size, YAML alias expansion, call depth, followed calls, steps per job, reference chains and time. No ordinary repository reaches them. Reaching one fails the step whatever `fail_on` says, because a partial scan must not read as a clean one.
 
