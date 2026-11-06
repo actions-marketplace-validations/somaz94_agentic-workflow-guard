@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.0.5](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.4...v1.0.5) (2026-11-06)
+
+### Bug Fixes
+
+- keep the shell lexer linear and read here-documents the way bash 3.2 and 5 do ([e80d4cd](https://github.com/somaz94/agentic-workflow-guard/commit/e80d4cdba53db67d6d89d7ef9c88bf8b6599677f))
+
+### Chores
+
+- bump the action image to v1.0.5 ([3091bf6](https://github.com/somaz94/agentic-workflow-guard/commit/3091bf6f6ad7e740c1bb0ccae4f0c0da8f2b9436))
+
+### Contributors
+
+- somaz
+
+<br/>
+
 ## [v1.0.4](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.3...v1.0.4) (2026-11-05)
 
 ### Bug Fixes
