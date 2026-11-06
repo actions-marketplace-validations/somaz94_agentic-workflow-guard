@@ -89,6 +89,94 @@ func TestFindRun(t *testing.T) {
 	}
 }
 
+func TestFindRunReadsTheShell(t *testing.T) {
+	r, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{
+		// An unquoted here-document expands its body, `#` lines included.
+		": <<E\n# $(claude -p x)\nE":                       "claude-cli",
+		": <<E\n# `claude -p x`\nE":                        "claude-cli",
+		"echo $(true)#\"\n# $(claude -p x) \"":             "claude-cli",
+		"echo $((1))#\"\n# $(claude -p x) \"":              "claude-cli",
+		"if((1<<2)); then :; fi\nx='\n# '; claude -p z":    "claude-cli",
+		"while((0<<1)); do :; done\nx='\n# '; claude -p z": "claude-cli",
+		"out=$(claude -p)":                                 "claude-cli",
+		"claude -p;echo":                                   "claude-cli",
+		"claude -p<prompt.md":                              "claude-cli",
+		"out=`gemini -p`":                                  "gemini-cli",
+		"x=$(codex exec)":                                  "codex-cli",
+		"opencode run;":                                    "opencode-cli",
+		"{ claude -p x; }":                                 "claude-cli",
+		"f() { claude -p x; }":                             "claude-cli",
+		"case $a in x) claude -p y;; esac":                 "claude-cli",
+		"if a; then :; elif claude -p x; then :; fi":       "claude-cli",
+		"claude --append-system-prompt \"a\nb\" -p x":      "claude-cli",
+		"claude --append-system-prompt 'a\nb' -p x":        "claude-cli",
+		`"claude" -p x`:                                    "claude-cli",
+		`'claude' -p x`:                                    "claude-cli",
+		`\claude -p x`:                                     "claude-cli",
+		`cl"au"de -p x`:                                    "claude-cli",
+		`"$HOME/.local/bin/claude" -p x`:                   "claude-cli",
+		`npx "@anthropic-ai/claude-code" -p x`:             "claude-cli",
+		`claude "-p" x`:                                    "claude-cli",
+		"cla\\\nude -p x":                                  "claude-cli",
+		"SEP=\\\\\nclaude -p x":                            "claude-cli",
+		"echo a; SEP=\\\\\ncodex exec --yolo":              "codex-cli",
+		"echo done \\\\\nclaude -p x":                      "claude-cli",
+	}
+	for script, id := range cases {
+		a := r.FindRuns(script)
+		if len(a) != 1 || a[0].ID != id {
+			t.Errorf("FindRuns(%q) = %+v; want %s", script, a, id)
+		}
+	}
+	for _, script := range []string{
+		": <<'E'\n# $(claude -p x)\nE",
+		"bash <<E\n# claude -p x\nE",
+		": <<E\n# \\$(claude -p y)\nE",
+		`echo "a b" 'claude -p'`,
+		"echo ${HOME}/bin/claude -p x",
+	} {
+		if a := r.FindRuns(script); a != nil {
+			t.Errorf("FindRuns(%q) = %v; want none", script, a)
+		}
+	}
+}
+
+func TestCommands(t *testing.T) {
+	r, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := r.FindRuns("claude -p x")[0]
+	for text, want := range map[string]string{
+		"":        "",
+		"echo hi": "",
+		"claude -p x --allowedTools Read; echo --disallowedTools Bash": "claude -p x --allowedTools Read",
+		"a && claude -p x | tee out":                                   "claude -p x ",
+		"out=$(claude -p \"$(cat f)\" --model m) && b":                 "claude -p \"$(cat f)\" --model m",
+		"claude -p x 2>&1 --model m\nb":                                "claude -p x 2>&1 --model m",
+		"x=`claude -p y` z":                                            "claude -p y",
+		"claude -p 'a;b' \"c|d\" e\\;f; g":                             "claude -p 'a;b' \"c|d\" e\\;f",
+		"claude -p a\nclaude -p b --model m":                           "claude -p a\nclaude -p b --model m",
+		"claude -p \"open":                                             "claude -p \"open",
+		"if claude -p x; then :; fi":                                   "if claude -p x",
+		"claude -p $(cat f) --model m; b":                              "claude -p $(cat f) --model m",
+		"x=$(date)\nclaude -p x --model m":                             "claude -p x --model m",
+		"claude -p a --model m; claude -p b":                           "claude -p a --model m\n",
+		"claude -p $'it\\'s;' x; b":                                    "claude -p $'it\\'s;' x",
+	} {
+		if got := strings.Join(cli.Commands(text), "\n"); got != want {
+			t.Errorf("Commands(%q) = %q; want %q", text, got, want)
+		}
+	}
+	if got := r.Find("anthropics/claude-code-action").Commands("claude -p x"); got != nil {
+		t.Errorf("an action has commands %q", got)
+	}
+}
+
 func TestFindRunsReturnsEveryAgent(t *testing.T) {
 	r, err := Load()
 	if err != nil {
@@ -156,6 +244,17 @@ func TestWithoutComments(t *testing.T) {
 		"x=$(true)\ncat <<E\nE) # t\nE\nb # d":     "x=$(true)\ncat <<E\nE) # t\nE\nb ",
 		"cat <(true)\ncat <<E\nE) # t\nE\nb # d":   "cat <(true)\ncat <<E\nE) # t\nE\nb ",
 		"x=$(cat <<A <<B\n1\nA) # c\nb # d":        "x=$(cat <<A <<B\n1\nA) \nb ",
+		"echo $(a)#b # c":                          "echo $(a)#b ",
+		"echo $((1))#b # c":                        "echo $((1))#b ",
+		"cat <(a)#b # c":                           "cat <(a)#b ",
+		"a=(1 2)#b # c":                            "a=(1 2)#b ",
+		"(a)#b\nc # d":                             "(a)\nc ",
+		"((1))#b\nc # d":                           "((1))\nc ",
+		"if((1<<2)); then :; fi # c\nb # d":        "if((1<<2)); then :; fi \nb ",
+		": <<E\n# $(a) b\nE\nc # d":                ": <<E\n$(a) b\nE\nc ",
+		": <<E\n  # x `a` b\nE\nc # d":             ": <<E\n`a` b\nE\nc ",
+		": <<E\n# ${x} b\nE\nc # d":                ": <<E\n${x} b\nE\nc ",
+		": <<'E'\n# $(a) b\nE\nc # d":              ": <<'E'\n\nE\nc ",
 	} {
 		if got := WithoutComments(in); got != want {
 			t.Errorf("WithoutComments(%q) = %q; want %q", in, got, want)
@@ -203,6 +302,58 @@ func TestCommentReadingsStayLinear(t *testing.T) {
 			t.Errorf("%s took %s", name, took)
 		}
 	}
+}
+
+func TestScriptReadingsStayLinear(t *testing.T) {
+	r, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := r.FindRuns("claude -p x")[0]
+	for name, script := range map[string]string{
+		"commands on one line": strings.Repeat("claude -p ", 1<<15),
+		"open quotes":          strings.Repeat("claude -p \"\n", 1<<15),
+		"open backticks":       strings.Repeat("claude -p `", 1<<15),
+		"open parentheses":     "claude -p " + strings.Repeat("(", 1<<18),
+		"quoted words":         strings.Repeat(`"a"'b'\c"`, 1<<15),
+	} {
+		start := time.Now()
+		for _, text := range normalized([]string{script}) {
+			cli.Commands(text)
+		}
+		if took := time.Since(start); took > 5*time.Second {
+			t.Errorf("%s took %s", name, took)
+		}
+	}
+}
+
+func FuzzScriptReadings(f *testing.F) {
+	for _, s := range []string{"claude -p \"a\nb\" x", "\"claude\" -p `a` ; b", "x=$(claude -p 'y\n') 2>&1 | c", "\\c'l'\"a\""} {
+		f.Add(s)
+	}
+	r, err := Load()
+	if err != nil {
+		f.Fatal(err)
+	}
+	cli := r.FindRuns("claude -p x")[0]
+	f.Fuzz(func(t *testing.T, s string) {
+		if joined := joinQuotedLines(s); len(joined) != len(s) {
+			t.Errorf("joinQuotedLines(%q) = %q, which changed length", s, joined)
+		}
+		if got := joinContinuations(s); len(got) > len(s) {
+			t.Errorf("joinContinuations(%q) = %q, which grew", s, got)
+		}
+		if got := unquoteWords(s); len(got) > len(s) {
+			t.Errorf("unquoteWords(%q) = %q, which grew", s, got)
+		}
+		for _, text := range ScriptReadings(s) {
+			for _, c := range cli.Commands(text) {
+				if !strings.Contains(text, c) {
+					t.Errorf("Commands(%q) has %q, which is not in it", text, c)
+				}
+			}
+		}
+	})
 }
 
 func TestFindRunsSeesPastAComment(t *testing.T) {

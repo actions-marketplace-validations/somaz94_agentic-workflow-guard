@@ -106,7 +106,7 @@ agents:
       - {input: settings, pattern: 'bypassPermissions'}
 
   - id: claude-cli
-    run_pattern: '(?:claude|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*@anthropic-ai/claude-code(?:@\S+)?)\s[^\n]*(?:-p|--print)(?:\s|=|$)'
+    run_pattern: '(?:claude|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*@anthropic-ai/claude-code(?:@\S+)?)\s[^\n]*(?:-p|--print)(?:[\s=;&|)<>\x60]|$)'
     actor_check: false
     power: scoped
     tool_inputs: [run]
@@ -118,7 +118,7 @@ agents:
 
   # `codex exec` runs in a read-only sandbox unless told otherwise.
   - id: codex-cli
-    run_pattern: '(?:codex|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*@openai/codex(?:@\S+)?)\s(?:[^\n]*\s)?(?:exec|e)(?:\s|$)'
+    run_pattern: '(?:codex|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*@openai/codex(?:@\S+)?)\s(?:[^\n]*\s)?(?:exec|e)(?:[\s;&|)<>\x60]|$)'
     actor_check: false
     power: limited
     scoped_when:
@@ -127,14 +127,14 @@ agents:
       - {input: run, pattern: 'danger-full-access|--dangerously-bypass-approvals-and-sandbox|--yolo'}
 
   - id: gemini-cli
-    run_pattern: '(?:gemini|qwen|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*(?:@google/gemini-cli|@qwen-code/qwen-code)(?:@\S+)?)\s[^\n]*(?:-p|--prompt)(?:\s|=|$)'
+    run_pattern: '(?:gemini|qwen|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*(?:@google/gemini-cli|@qwen-code/qwen-code)(?:@\S+)?)\s[^\n]*(?:-p|--prompt)(?:[\s=;&|)<>\x60]|$)'
     actor_check: false
     power: scoped
     broad_when:
       - {input: run, pattern: '(^|\s)(--yes|-y|--yolo)(\s|$)|--approval-mode[ =]yolo'}
 
   - id: copilot-cli
-    run_pattern: '(?:copilot|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*@github/copilot(?:@\S+)?)\s[^\n]*(?:-p|--prompt)(?:\s|=|$)'
+    run_pattern: '(?:copilot|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*@github/copilot(?:@\S+)?)\s[^\n]*(?:-p|--prompt)(?:[\s=;&|)<>\x60]|$)'
     actor_check: false
     power: scoped
     broad_when:
@@ -142,7 +142,7 @@ agents:
 
   # Most opencode permissions, bash included, default to allow.
   - id: opencode-cli
-    run_pattern: '(?:opencode|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*opencode-ai(?:@\S+)?)\s+run(?:\s|$)'
+    run_pattern: '(?:opencode|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*opencode-ai(?:@\S+)?)\s+run(?:[\s;&|)<>\x60]|$)'
     actor_check: false
     power: broad
     config_files: [opencode.json, opencode.jsonc, .opencode/opencode.json, .opencode/opencode.jsonc]

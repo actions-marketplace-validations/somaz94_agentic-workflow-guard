@@ -819,6 +819,59 @@ func TestSeverityString(t *testing.T) {
 	}
 }
 
+func TestRunPower(t *testing.T) {
+	r := reg(t)
+	cli := r.FindRuns("claude -p x")[0]
+	const denyAll = "--disallowedTools Bash,Write,Edit,MultiEdit,NotebookEdit,WebFetch"
+	for script, want := range map[string]registry.Power{
+		"claude -p x": registry.Scoped,
+		"claude -p x --allowedTools \"Read,Grep\"":                             registry.Limited,
+		"claude -p x " + denyAll:                                               registry.Limited,
+		"claude -p x --allowedTools Bash;":                                     registry.Broad,
+		"claude -p x --allowedTools Bash|tee out":                              registry.Broad,
+		"claude -p x --allowedTools Read; echo done":                           registry.Limited,
+		"claude -p x\necho \"" + denyAll + "\"":                                registry.Scoped,
+		"claude -p x\necho \"use '" + denyAll + "'\"":                          registry.Scoped,
+		"claude -p x; echo '" + denyAll + "'":                                  registry.Scoped,
+		"echo --allowedTools Read; claude -p x":                                registry.Scoped,
+		"echo --dangerously-skip-permissions; claude -p x --allowedTools Read": registry.Broad,
+		"claude --append-system-prompt \"a\nb\" -p x --allowedTools Read":      registry.Limited,
+		"\"claude\" -p x --dangerously-skip-permissions":                       registry.Broad,
+		"claude -p a --allowedTools Read\nclaude -p b":                         registry.Scoped,
+		// A second command swallowed by the same match keeps no allowlist of its own.
+		"claude -p a --allowedTools Read; claude -p b":   registry.Scoped,
+		"claude -p a --allowedTools Read && claude -p b": registry.Scoped,
+		"claude -p a " + denyAll + " | claude -p b":      registry.Scoped,
+		// A widening flag elsewhere still widens, whatever a mention elsewhere denies.
+		"ARGS=--dangerously-skip-permissions\necho " + denyAll + ";\nclaude -p x $ARGS":   registry.Broad,
+		"ARGS=--dangerously-skip-permissions\necho " + denyAll + " >n\nclaude -p x $ARGS": registry.Broad,
+		"echo --dangerously-skip-permissions\nclaude -p x " + denyAll:                     registry.Limited,
+		// bash ends the comment before its backslash, so it joins no line to the agent's.
+		"shopt -s extglob\necho hi # note \\\nclaude -p x @(a)#x --dangerously-skip-permissions": registry.Broad,
+		"echo a[ <<E\n'\nE\n((x = 1 << 2)) && :\nclaude -p x # --allowedTools Read":              registry.Scoped,
+		"claude -p x --dangerously-skip-\\\npermissions":                                         registry.Broad,
+		// Flags in a variable reach the agent, so a wider allowlist or an MCP server
+		// anywhere undoes its own narrowing.
+		"TOOLS=\"--allowedTools Bash\"\nclaude -p x $TOOLS --allowedTools Read":                        registry.Broad,
+		"MCP=\"--mcp-config m.json\"\nclaude -p x --dangerously-skip-permissions " + denyAll + " $MCP": registry.Broad,
+		"EXTRA=\"--allowedTools mcp__gh__create_issue\"\nclaude -p x " + denyAll + " $EXTRA":           registry.Scoped,
+		"SEP=\\\\\nclaude -p x --dangerously-skip-permissions":                                         registry.Broad,
+		// An agent after a blank line or an assignment keeps its own allowlist.
+		"echo a\n\nclaude -p x --allowedTools Read":      registry.Limited,
+		"\nclaude -p x --allowedTools Read":              registry.Limited,
+		"date |\n  claude -p x --allowedTools Read":      registry.Limited,
+		"x=$(date)\nclaude -p x --allowedTools Read":     registry.Limited,
+		"x=`date`\nclaude -p x --allowedTools Read":      registry.Limited,
+		"A=\"--allowedTools Read\"\nclaude -p y":         registry.Scoped,
+		"claude -p $'it\\'s' ; echo --allowedTools Read": registry.Scoped,
+	} {
+		st := workflow.Step{With: map[string]workflow.Input{registry.RunInput: {Value: script}}}
+		if got := Power(r, cli, st); got != want {
+			t.Errorf("Power(%q) = %v; want %v", script, got, want)
+		}
+	}
+}
+
 func TestPowerUnknownDefaults(t *testing.T) {
 	r := reg(t)
 	got := Power(r, r.Find("anthropics/claude-code-action@v1"), workflow.Step{With: map[string]workflow.Input{"claude_args": {Value: "--dangerously-skip-permissions"}}})

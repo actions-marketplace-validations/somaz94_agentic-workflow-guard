@@ -139,7 +139,7 @@ func parse(data []byte) (*Registry, error) {
 	}
 	for _, a := range r.Agents {
 		if a.RunPattern != "" {
-			if a.run, err = regexp.Compile(commandStart + `(?:` + a.RunPattern + `)`); err != nil {
+			if a.run, err = regexp.Compile(commandStart + `(` + a.RunPattern + `)`); err != nil {
 				return nil, fmt.Errorf("agent %s run_pattern: %w", a.ID, err)
 			}
 		}
@@ -164,15 +164,34 @@ func parse(data []byte) (*Registry, error) {
 // commandStart anchors a run_pattern where a shell starts a command, so a mention
 // in an `echo` or a prompt is not an agent. It also skips the wrappers people put
 // in front of one.
-const commandStart = `(?im)(?:^|[|;&(\x60]|\b(?:if|then|else|do|while|until)\s|!\s)\s*` + shellAssign + `*(?:(?:[\w./-]*/)?(?:timeout|time|exec|nohup|sudo|env)\s+(?:-\S+\s+(?:[a-z]\w*\s+)?)*(?:\d+[smh]?\s+)?` + shellAssign + `*)*(?:(?:ba|z)?sh\s+-\w*c\s+["']?)?(?:[\w$.{}~/-]*/)?`
+const commandStart = `(?im)(?:^|[|;&()\x60]|\b(?:if|then|elif|else|do|while|until)\s|[!{]\s)\s*` + shellAssign + `*(?:(?:[\w./-]*/)?(?:timeout|time|exec|nohup|sudo|env)\s+(?:-\S+\s+(?:[a-z]\w*\s+)?)*(?:\d+[smh]?\s+)?` + shellAssign + `*)*(?:(?:ba|z)?sh\s+-\w*c\s+["']?)?(?:[\w$.{}~/-]*/)?`
 
 const shellAssign = `(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)`
 
 // wordComment is a `#` at a word start through its line end, whatever the quotes.
 var wordComment = regexp.MustCompile(`(?m)(^|[ \t;&|()\x60])#.*$`)
 
-// shellNoise is the backslash that continues a command on the next line.
-var shellNoise = strings.NewReplacer("\\\n", " ")
+// joinContinuations deletes each backslash that continues a command on the next
+// line, as bash does, so `cla\<newline>ude` runs claude. An escaped backslash before
+// a line break, as in `SEP=\\`, continues nothing.
+func joinContinuations(s string) string {
+	if !strings.Contains(s, "\\\n") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			if s[i+1] != '\n' {
+				b.WriteString(s[i : i+2])
+			}
+			i++
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
 
 // WithoutComments blanks shell comments, on their own line or after a command. A `#`
 // in a string, an expansion, arithmetic or a here-document is text, so it follows
@@ -265,14 +284,14 @@ func withoutComments(script string, shifts, midLine bool) string {
 			b.WriteString(rest[:n])
 			continue
 		case strings.HasPrefix(rest, "$(("):
-			enter(shellFrame{closer: ')', arith: true})
-			enter(shellFrame{closer: ')', arith: true})
+			enter(shellFrame{closer: ')', arith: true, word: true})
+			enter(shellFrame{closer: ')', arith: true, word: true})
 			i += 2
 			b.WriteString("$((")
 			wordStart = false
 			continue
 		case strings.HasPrefix(rest, "$("):
-			enter(shellFrame{closer: ')', subst: true})
+			enter(shellFrame{closer: ')', subst: true, word: true})
 			i++
 			b.WriteString("$(")
 			wordStart = true
@@ -308,14 +327,24 @@ func withoutComments(script string, shifts, midLine bool) string {
 		case c == '\'' || c == '"':
 			quote = c
 		case c == '(' && top().closer != '}':
+			prev := byte(' ')
+			if i > 0 {
+				prev = script[i-1]
+			}
 			enter(shellFrame{
 				closer: ')',
-				arith:  top().arith || wordStart && strings.HasPrefix(rest, "(("),
-				subst:  i > 0 && (script[i-1] == '<' || script[i-1] == '>'),
-				array:  i > 0 && script[i-1] == '=',
+				// bash parses `((` as arithmetic first, and `if((` needs no space.
+				arith: top().arith || strings.HasPrefix(rest, "((") && strings.IndexByte("<>=", prev) < 0,
+				subst: prev == '<' || prev == '>',
+				array: prev == '=',
+				word:  strings.IndexByte("<>=", prev) >= 0,
 			})
 		case c == ')' && top().closer == ')':
+			word := top().word
 			leave()
+			b.WriteByte(c)
+			wordStart = quote == 0 && !word
+			continue
 		case c == '#' && wordStart && top().closer != '}':
 			stops := "\n"
 			if top().closer == '`' {
@@ -362,6 +391,7 @@ type shellFrame struct {
 	arith         bool // a `<<` in it shifts bits
 	subst         bool // `$(`, `<(` or `>(`, whose `)` can end a here-document
 	array         bool // `=(`, where a `[` at a word start opens a subscript
+	word          bool // its `)` continues a word, so a `#` after it is text
 }
 
 // templateLen is the length of the `${{ }}` at the start of s, 0 when it never ends.
@@ -489,7 +519,12 @@ func copyHereDocs(b *strings.Builder, script string, pos int, bodies []hereBody,
 				return start + keep
 			}
 			if strings.HasPrefix(strings.TrimSpace(line), "#") {
-				line = strings.Repeat("\n", strings.Count(line, "\n"))
+				// The shell expands an unquoted body before anything reads it as a comment.
+				keep := ""
+				if j := expansionStart(line); !body.quoted && j >= 0 {
+					line, keep = line[:j], line[j:]
+				}
+				line = strings.Repeat("\n", strings.Count(line, "\n")) + keep
 			}
 			b.WriteString(line)
 		}
@@ -514,6 +549,20 @@ func lineOffset(line string, n int, body hereBody) int {
 		}
 	}
 	return i
+}
+
+// expansionStart is the index of the first unescaped `$(`, `${` or backtick in s, -1
+// for none.
+func expansionStart(s string) int {
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '\\':
+			i++
+		case s[i] == '`' || s[i] == '$' && i+1 < len(s) && (s[i+1] == '(' || s[i+1] == '{'):
+			return i
+		}
+	}
+	return -1
 }
 
 func oddBackslashes(s string) bool {
@@ -568,12 +617,7 @@ func (r *Registry) FindRuns(script string) []*Agent {
 	// reading counts too.
 	// A comment the tracking missed can end in a backslash and join the next command
 	// to itself, so one reading cuts every comment a shell could see.
-	var texts []string
-	for _, t := range append(CommentReadings(script), WithoutCommentLines(script), wordComment.ReplaceAllString(script, "$1")) {
-		if t = shellNoise.Replace(t); !slices.Contains(texts, t) {
-			texts = append(texts, t)
-		}
-	}
+	texts := normalized(append(CommentReadings(script), WithoutCommentLines(script), wordComment.ReplaceAllString(script, "$1")))
 	var out []*Agent
 	for _, a := range r.Agents {
 		if a.run != nil && slices.ContainsFunc(texts, a.run.MatchString) {
@@ -581,6 +625,189 @@ func (r *Registry) FindRuns(script string) []*Agent {
 		}
 	}
 	return out
+}
+
+// ScriptReadings returns the texts a `run:` script's flags are read in: each comment
+// reading with its continuations joined, with and without its quoted line breaks,
+// and as it stands, because joining a comment the tracking missed to the next line
+// can hide a flag on it.
+func ScriptReadings(script string) []string {
+	base := append(CommentReadings(script), WithoutCommentLines(script))
+	out := normalized(base)
+	for _, t := range base {
+		if !slices.Contains(out, t) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// normalized joins continued lines and drops the quotes the shell drops. A quoted
+// line break stays in one copy, because a quote the tracking got wrong would join a
+// command to the line before it.
+func normalized(texts []string) []string {
+	var out []string
+	add := func(t string) {
+		if t = unquoteWords(t); !slices.Contains(out, t) {
+			out = append(out, t)
+		}
+	}
+	for _, t := range texts {
+		t = joinContinuations(t)
+		add(t)
+		add(joinQuotedLines(t))
+	}
+	return out
+}
+
+// unquoteWords drops the quotes around a word with no space or operator in it, and a
+// backslash before a word character, as the shell does before it runs anything:
+// `"claude" -p` and `\claude -p` run claude.
+func unquoteWords(s string) string {
+	if strings.IndexAny(s, `"'\`) < 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '"' || c == '\'':
+			if n := plainWord(s[i+1:], c); n >= 0 {
+				b.WriteString(s[i+1 : i+1+n])
+				i += n + 1
+				continue
+			}
+		case c == '\\' && i+1 < len(s) && isWordByte(s[i+1]):
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// plainWord is the length of s up to quote, -1 when a space or operator comes first.
+func plainWord(s string, quote byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == quote {
+			return i
+		}
+		if strings.IndexByte("\"' \t\n\r\f\v`()\\;&|<>", s[i]) >= 0 {
+			return -1
+		}
+	}
+	return -1
+}
+
+func isWordByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("_@./-", c) >= 0
+}
+
+// joinQuotedLines turns each line break inside quotes into a space, so an argument
+// that spans lines leaves the flags after it on the agent's line.
+func joinQuotedLines(s string) string {
+	b := []byte(s)
+	var quote byte
+	for i := 0; i < len(b); i++ {
+		switch c := b[i]; {
+		case c == '\n' && quote != 0:
+			b[i] = ' '
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+		case c == '\\':
+			i++
+		case c == quote:
+			quote = 0
+		case quote == 0 && (c == '\'' || c == '"'):
+			quote = c
+		}
+	}
+	return string(b)
+}
+
+// Commands returns each command in text that starts the agent, through the operator
+// that ends it, so a flag in another command is not read as the agent's own.
+func (a *Agent) Commands(text string) []string {
+	if a.run == nil {
+		return nil
+	}
+	var out []string
+	end := 0
+	for _, m := range a.run.FindAllStringSubmatchIndex(text, -1) {
+		if m[0] < end {
+			continue
+		}
+		// The match can start on an earlier line, at a blank line or an assignment.
+		start := m[0]
+		if j := strings.LastIndexByte(text[m[0]:m[2]], '\n'); j >= 0 {
+			start += j + 1
+		}
+		inTicks := text[start] == '`'
+		if strings.IndexByte("|;&(){`", text[start]) >= 0 {
+			start++
+		}
+		for start < len(text) && strings.IndexByte(" \t\r\n\f\v", text[start]) >= 0 {
+			start++
+		}
+		end = commandEnd(text, start, inTicks)
+		out = append(out, text[start:end])
+		// A match runs to the last flag on its line, so it can swallow a second
+		// command, which then narrows nothing.
+		if m[1] > end && a.run.MatchString(text[end:m[1]]) {
+			out = append(out, "")
+		}
+	}
+	return out
+}
+
+// commandEnd is where the command at s[i:] ends: an unquoted line break, `;`, `&` or
+// `|`, or a `)` it did not open, or a backtick when it runs inside backticks. A
+// redirection such as `2>&1` goes on.
+func commandEnd(s string, i int, inTicks bool) int {
+	depth := 0
+	var quote byte
+	ticks := false
+	for ; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+		case c == '\\':
+			i++
+		case quote == ansiQuote:
+			if c == '\'' {
+				quote = 0
+			}
+		case quote == 0 && c == '$' && i+1 < len(s) && s[i+1] == '\'':
+			quote = ansiQuote
+			i++
+		case quote == '"':
+			if c == '"' {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '(':
+			depth++
+		case c == ')':
+			if depth == 0 {
+				return i
+			}
+			depth--
+		case c == '`' && inTicks:
+			return i
+		case c == '`':
+			ticks = !ticks
+		case depth > 0 || ticks:
+		case c == '&' && (i > 0 && (s[i-1] == '>' || s[i-1] == '<') || i+1 < len(s) && s[i+1] == '>'):
+		case strings.IndexByte("\n;&|", c) >= 0:
+			return i
+		}
+	}
+	return min(i, len(s))
 }
 
 // Find returns the agent behind a `uses:` value, ignoring its ref and subpath.
