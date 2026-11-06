@@ -178,28 +178,44 @@ var shellNoise = strings.NewReplacer("\\\n", " ")
 // in a string, an expansion, arithmetic or a here-document is text, so it follows
 // each of them. Newlines stay, so a continuation before a comment cannot swallow the
 // command after it.
-func WithoutComments(script string) string { return withoutComments(script, true) }
+func WithoutComments(script string) string { return withoutComments(script, true, true) }
 
-// CommentReadings lexes script both ways a `<<` under an open `[` can read, a shift in
-// `a[1<<2]=3` and a here-document in `echo a[ <<EOF`. A lexer cannot tell them apart.
+// CommentReadings lexes script every way a lexer cannot settle. A `<<` under an open `[`
+// is a shift in `a[1<<2]=3` and a here-document in `echo a[ <<EOF`. Inside `$(`, a body
+// line `EOF)` ends the body in bash 3.2 and is plain body text in bash 5.
 func CommentReadings(script string) []string {
-	return []string{withoutComments(script, true), withoutComments(script, false)}
+	var out []string
+	for _, shifts := range []bool{true, false} {
+		for _, midLine := range []bool{true, false} {
+			out = append(out, withoutComments(script, shifts, midLine))
+		}
+	}
+	return out
 }
 
-func withoutComments(script string, shifts bool) string {
+func withoutComments(script string, shifts, midLine bool) string {
 	var b strings.Builder
 	b.Grow(len(script))
 	var quote byte
 	var open []shellFrame
 	var bodies []hereBody
 	wordStart, unclosed, bracket := true, false, false
-	enter := func(closer byte, arith bool) {
-		open = append(open, shellFrame{quote: quote, closer: closer, arith: arith})
+	substs := 0 // open frames with subst set, counted so a newline does not walk the stack
+	enter := func(f shellFrame) {
+		f.quote = quote
+		open = append(open, f)
 		quote = 0
+		if f.subst {
+			substs++
+		}
 	}
 	leave := func() {
-		quote = open[len(open)-1].quote
+		f := open[len(open)-1]
+		quote = f.quote
 		open = open[:len(open)-1]
+		if f.subst {
+			substs--
+		}
 	}
 	top := func() shellFrame {
 		if len(open) == 0 {
@@ -212,7 +228,7 @@ func withoutComments(script string, shifts bool) string {
 		rest := script[i:]
 		switch c {
 		case '[':
-			bracket = quote == 0 && opensSubscript(script[:i])
+			bracket = quote == 0 && (opensSubscript(script[:i]) || wordStart && top().array)
 		case ']', '\n':
 			bracket = false
 		}
@@ -249,21 +265,20 @@ func withoutComments(script string, shifts bool) string {
 			b.WriteString(rest[:n])
 			continue
 		case strings.HasPrefix(rest, "$(("):
-			enter(')', true)
-			enter(')', true)
+			enter(shellFrame{closer: ')', arith: true})
+			enter(shellFrame{closer: ')', arith: true})
 			i += 2
 			b.WriteString("$((")
 			wordStart = false
 			continue
 		case strings.HasPrefix(rest, "$("):
-			enter(')', false)
-			open[len(open)-1].subst = true
+			enter(shellFrame{closer: ')', subst: true})
 			i++
 			b.WriteString("$(")
 			wordStart = true
 			continue
 		case strings.HasPrefix(rest, "${"):
-			enter('}', top().arith)
+			enter(shellFrame{closer: '}', arith: top().arith})
 			i++
 			b.WriteString("${")
 			wordStart = false
@@ -281,7 +296,7 @@ func withoutComments(script string, shifts bool) string {
 				wordStart = false
 				continue
 			}
-			enter('`', false)
+			enter(shellFrame{closer: '`'})
 		case quote == '"':
 			if c == '"' {
 				quote = 0
@@ -293,9 +308,12 @@ func withoutComments(script string, shifts bool) string {
 		case c == '\'' || c == '"':
 			quote = c
 		case c == '(' && top().closer != '}':
-			procSubst := i > 0 && (script[i-1] == '<' || script[i-1] == '>')
-			enter(')', top().arith || wordStart && strings.HasPrefix(rest, "(("))
-			open[len(open)-1].subst = procSubst
+			enter(shellFrame{
+				closer: ')',
+				arith:  top().arith || wordStart && strings.HasPrefix(rest, "(("),
+				subst:  i > 0 && (script[i-1] == '<' || script[i-1] == '>'),
+				array:  i > 0 && script[i-1] == '=',
+			})
 		case c == ')' && top().closer == ')':
 			leave()
 		case c == '#' && wordStart && top().closer != '}':
@@ -324,8 +342,7 @@ func withoutComments(script string, shifts bool) string {
 			}
 		case c == '\n' && len(bodies) > 0:
 			b.WriteByte(c)
-			inSubst := slices.ContainsFunc(open, func(f shellFrame) bool { return f.subst })
-			i = copyHereDocs(&b, script, i+1, bodies, top().closer, inSubst) - 1
+			i = copyHereDocs(&b, script, i+1, bodies, top().closer, midLine && substs > 0) - 1
 			bodies = nil
 			wordStart = true
 			continue
@@ -344,6 +361,7 @@ type shellFrame struct {
 	quote, closer byte
 	arith         bool // a `<<` in it shifts bits
 	subst         bool // `$(`, `<(` or `>(`, whose `)` can end a here-document
+	array         bool // `=(`, where a `[` at a word start opens a subscript
 }
 
 // templateLen is the length of the `${{ }}` at the start of s, 0 when it never ends.
@@ -423,7 +441,8 @@ func parseHereDoc(s string) (hereBody, int) {
 // copyHereDocs writes each body through its terminator and returns where it ended.
 // Its `#` lines go: `bash <<EOF` runs them as comments, and to any other reader of
 // the body they are no command either. Inside `$(`, a line opening with the word ends
-// the body if a `)` follows anywhere on it, and what follows the word is shell again.
+// the body if a `)` follows anywhere on it, what follows the word is shell again, and
+// the bodies still pending are never read, as in bash 3.2.
 // Inside backticks the shell cuts the string first, so the closing backtick ends it.
 func copyHereDocs(b *strings.Builder, script string, pos int, bodies []hereBody, closer byte, inSubst bool) int {
 	for _, body := range bodies {
@@ -461,13 +480,13 @@ func copyHereDocs(b *strings.Builder, script string, pos int, bodies []hereBody,
 				break
 			}
 			if inSubst && strings.HasPrefix(text, body.word) && strings.IndexByte(text[len(body.word):], ')') >= 0 {
-				keep := len(strings.TrimSuffix(line, "\n")) - len(text) + len(body.word)
+				keep := lineOffset(line, len(body.word), body)
 				b.WriteString(line[:keep])
 				if text[len(body.word)] != ')' {
 					b.WriteByte('\n')
 				}
-				pos = start + keep
-				break
+				// Reading the pending bodies from here would rescan the line once per body.
+				return start + keep
 			}
 			if strings.HasPrefix(strings.TrimSpace(line), "#") {
 				line = strings.Repeat("\n", strings.Count(line, "\n"))
@@ -476,6 +495,25 @@ func copyHereDocs(b *strings.Builder, script string, pos int, bodies []hereBody,
 		}
 	}
 	return pos
+}
+
+// lineOffset maps n bytes of a body line, read with its joins and leading tabs dropped,
+// back to an offset in the raw line.
+func lineOffset(line string, n int, body hereBody) int {
+	i, leading := 0, body.tabs
+	for n > 0 && i < len(line) {
+		switch {
+		case !body.quoted && strings.HasPrefix(line[i:], "\\\n"):
+			i += 2
+		case leading && line[i] == '\t':
+			i++
+		default:
+			leading = false
+			i++
+			n--
+		}
+	}
+	return i
 }
 
 func oddBackslashes(s string) bool {
@@ -528,16 +566,17 @@ func (r *Registry) FindRuns(script string) []*Agent {
 	// Comments first: the shell ends one at its newline, even after a backslash. A
 	// script built to fool the quote tracking must not hide an agent, so the plainer
 	// reading counts too.
-	readings := CommentReadings(script)
-	text := shellNoise.Replace(readings[0])
-	other := shellNoise.Replace(readings[1])
-	plain := shellNoise.Replace(WithoutCommentLines(script))
 	// A comment the tracking missed can end in a backslash and join the next command
 	// to itself, so one reading cuts every comment a shell could see.
-	cut := shellNoise.Replace(wordComment.ReplaceAllString(script, "$1"))
+	var texts []string
+	for _, t := range append(CommentReadings(script), WithoutCommentLines(script), wordComment.ReplaceAllString(script, "$1")) {
+		if t = shellNoise.Replace(t); !slices.Contains(texts, t) {
+			texts = append(texts, t)
+		}
+	}
 	var out []*Agent
 	for _, a := range r.Agents {
-		if a.run != nil && (a.run.MatchString(text) || other != text && a.run.MatchString(other) || plain != text && a.run.MatchString(plain) || cut != text && a.run.MatchString(cut)) {
+		if a.run != nil && slices.ContainsFunc(texts, a.run.MatchString) {
 			out = append(out, a)
 		}
 	}

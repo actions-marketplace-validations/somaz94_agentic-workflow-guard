@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +152,10 @@ func TestWithoutComments(t *testing.T) {
 		"cat <<EOF\nEO\\\nF\nb # d":                "cat <<EOF\nEO\\\nF\nb ",
 		"cat <<'E'\nabc\\\nE\nb # d":               "cat <<'E'\nabc\\\nE\nb ",
 		"a # never ends":                           "a ",
+		"cat <(cat <<E\nE) # c\nb # d":             "cat <(cat <<E\nE) \nb ",
+		"x=$(true)\ncat <<E\nE) # t\nE\nb # d":     "x=$(true)\ncat <<E\nE) # t\nE\nb ",
+		"cat <(true)\ncat <<E\nE) # t\nE\nb # d":   "cat <(true)\ncat <<E\nE) # t\nE\nb ",
+		"x=$(cat <<A <<B\n1\nA) # c\nb # d":        "x=$(cat <<A <<B\n1\nA) \nb ",
 	} {
 		if got := WithoutComments(in); got != want {
 			t.Errorf("WithoutComments(%q) = %q; want %q", in, got, want)
@@ -163,21 +168,40 @@ func FuzzWithoutComments(f *testing.F) {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		got := WithoutComments(s)
-		if strings.Count(got, "\n") < strings.Count(s, "\n") {
-			t.Errorf("WithoutComments(%q) = %q lost a line", s, got)
-		}
-		if len(got) > 2*len(s) {
-			t.Errorf("WithoutComments(%q) = %q grew", s, got)
+		for _, got := range CommentReadings(s) {
+			if strings.Count(got, "\n") < strings.Count(s, "\n") {
+				t.Errorf("CommentReadings(%q) has %q, which lost a line", s, got)
+			}
+			if len(got) > 2*len(s) {
+				t.Errorf("CommentReadings(%q) has %q, which grew", s, got)
+			}
 		}
 	})
 }
 
-func TestWithoutCommentsStaysLinearOnUnclosedTemplates(t *testing.T) {
-	start := time.Now()
-	WithoutComments(strings.Repeat("${{ ", 1<<18))
-	if took := time.Since(start); took > 5*time.Second {
-		t.Errorf("took %s", took)
+func TestCommentReadings(t *testing.T) {
+	for in, want := range map[string]string{
+		"echo [ <<E\nit's\nE\nb # d":             "echo [ <<E\nit's\nE\nb ",
+		"a=([1<<1]=y) # c\nb # d":                "a=([1<<1]=y) \nb ",
+		"x=$(cat <<A\nA)\nit's\nA\n) # c\nb # d": "x=$(cat <<A\nA)\nit's\nA\n) \nb ",
+	} {
+		if got := CommentReadings(in); !slices.Contains(got, want) {
+			t.Errorf("CommentReadings(%q) = %q; want one to be %q", in, got, want)
+		}
+	}
+}
+
+func TestCommentReadingsStayLinear(t *testing.T) {
+	for name, script := range map[string]string{
+		"unclosed templates":        strings.Repeat("${{ ", 1<<18),
+		"here-documents under nest": strings.Repeat("( ", 1<<18) + strings.Repeat("cat <<a\na\n", 1<<16),
+		"bodies ending mid-line":    "x=$(cat " + strings.Repeat("<<a ", 1<<17) + "\n" + strings.Repeat("a", 1<<19) + ")",
+	} {
+		start := time.Now()
+		CommentReadings(script)
+		if took := time.Since(start); took > 5*time.Second {
+			t.Errorf("%s took %s", name, took)
+		}
 	}
 }
 
@@ -204,6 +228,13 @@ func TestFindRunsSeesPastAComment(t *testing.T) {
 		"((echo a # (\n) | cat)\necho hi # note \\\nclaude -p x",
 		"y=$(( $(echo a # note \\\nclaude -p x\n) + 1 ))",
 		"x=$(cat <<EOF\nit's\nEOF)\necho hi # note \\\nclaude -p x",
+		"a=([1<<1]=y)\necho \"a\n#b\"; claude -p x",
+		"a=(x [1<<1]=y)\necho \"a\n#b\"; claude -p x",
+		"a[1<<1]=y\necho [ <<EOF\n\"\nEOF\necho \"a\n#b\"; claude -p x",
+		"x=$(cat <<A <<B\n1\nA)\n\"\nA\nB\n)\necho \"a\n#b\"; claude -p x",
+		"x=$(cat <<A\nA)\n\"\nA\n)\necho \"a\n#b\"; claude -p x",
+		"y=\"$(cat <<A\nA)x\\\n\"\necho \"a\n#b\"; claude -p x",
+		"y=\"$(cat <<-A\n\tA\\\n)x\\\n\"\necho \"a\n#b\"; claude -p x",
 	} {
 		if a := r.FindRuns(script); len(a) != 1 || a[0].ID != "claude-cli" {
 			t.Errorf("FindRuns(%q) = %+v; want claude-cli", script, a)
