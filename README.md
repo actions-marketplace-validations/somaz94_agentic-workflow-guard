@@ -106,6 +106,13 @@ This is static analysis, and a clean result is not a proof of safety.
 
 <br/>
 
+## Related projects
+
+- [whatdies](https://github.com/somaz94/whatdies): A Claude Code hook that shows what a Terraform or kubectl command would destroy before the agent runs it.
+- [agentport](https://github.com/somaz94/agentport): Convert Claude Code skills, slash commands and subagents to Codex and Antigravity formats.
+
+<br/>
+
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
