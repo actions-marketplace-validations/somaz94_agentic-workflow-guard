@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.0.6](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.5...v1.0.6) (2026-11-06)
+
+### Bug Fixes
+
+- find more shell forms of agent commands and narrow power only from their own command line ([e632996](https://github.com/somaz94/agentic-workflow-guard/commit/e632996ed28f1759773c16856f43e4030a0ed5c8))
+
+### Documentation
+
+- add related projects section to README ([19d1950](https://github.com/somaz94/agentic-workflow-guard/commit/19d19506d5dbe228a63010e74df2050acb39bd51))
+- add a screenshot of the findings as workflow annotations ([c630565](https://github.com/somaz94/agentic-workflow-guard/commit/c6305650ae47f4d928a65114206fd9b6bf8a2e9a))
+
+### Chores
+
+- bump the action image to v1.0.6 ([4a9d35a](https://github.com/somaz94/agentic-workflow-guard/commit/4a9d35a1abd02613a33a2f2529240e8f9db4517c))
+
+### Contributors
+
+- somaz
+
+<br/>
+
 ## [v1.0.5](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.4...v1.0.5) (2026-11-06)
 
 ### Bug Fixes

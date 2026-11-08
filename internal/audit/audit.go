@@ -55,12 +55,12 @@ var (
 	prFetch        = regexp.MustCompile(`refs/pull/|pull/[^ ]*/(head|merge)`)
 	gitCheckout    = regexp.MustCompile(`git\s+(checkout|switch|worktree\s+add|reset\s+--hard)`)
 	bashTool       = regexp.MustCompile(`\bBash\(([^)]*)\)`)
-	bareBash       = regexp.MustCompile(`(^|[\s,"'=])Bash($|[\s,"'])`)
+	bareBash       = regexp.MustCompile(`(^|[\s,"'=])Bash($|[\s,"';&|)<>])`)
 	templateExpr   = regexp.MustCompile(`\$\{\{.*?\}\}`)
-	allowedArg     = regexp.MustCompile(`(?i)--allowed-?tools[ =]("[^"]*"|'[^']*'|[^ -][^ ]*(?: [^ -][^ ]*)*)`)
-	denyList       = regexp.MustCompile(`(?i)--disallowed-?tools[ =]("[^"]*"|'[^']*'|\S+)`)
+	allowedArg     = regexp.MustCompile(`(?i)--allowed-?tools[ =]("[^"]*"|'[^']*'|[^\s;&|<>-][^\s;&|<>]*(?:\s+[^\s;&|<>-][^\s;&|<>]*)*)`)
+	denyList       = regexp.MustCompile(`(?i)--disallowed-?tools[ =]("[^"]*"|'[^']*'|[^\s;&|<>]+)`)
 	refName        = regexp.MustCompile(`(?i)\b(?:env|inputs)(?:\.[\w-]+|\[\s*'[^']*'\s*\])`)
-	deniedArg      = regexp.MustCompile(`(?i)--disallowed-?tools[ =]("[^"]*"|'[^']*'|\S+)|"(deny|disallowedTools)"\s*:\s*\[[^\]]*\]`)
+	deniedArg      = regexp.MustCompile(`(?i)--disallowed-?tools[ =]("[^"]*"|'[^']*'|[^\s;&|<>]+)|"(deny|disallowedTools)"\s*:\s*\[[^\]]*\]`)
 )
 
 type auditor struct {
@@ -742,48 +742,94 @@ func (a *auditor) fetchesUntrusted(s workflow.Step) bool {
 }
 
 // Power resolves what an agent step can do from its inputs. A script counts at the
-// worse of two readings: a flag in a comment narrows nothing, and a script that fools
-// the quote tracking hides no flag.
+// worst of its readings: a flag in a comment narrows nothing, and a script that fools
+// the quote tracking hides no flag. A flag anywhere in it can widen the agent, but
+// only one on the agent's own command line can narrow it, so `echo` naming a deny
+// list narrows nothing.
 func Power(reg *registry.Registry, agent *registry.Agent, st workflow.Step) registry.Power {
 	in, ok := st.With[registry.RunInput]
 	if !ok || agent.RunPattern == "" {
 		return powerOf(reg, agent, st)
 	}
-	worst := registry.Limited
-	for _, text := range append(registry.CommentReadings(in.Value), registry.WithoutCommentLines(in.Value)) {
+	with := func(text string) workflow.Step {
 		in.Value = text
 		st.With = map[string]workflow.Input{registry.RunInput: in}
-		worst = max(worst, powerOf(reg, agent, st))
+		return st
+	}
+	worst, found := registry.Limited, false
+	readings := registry.ScriptReadings(in.Value)
+	for _, text := range readings {
+		commands := agent.Commands(text)
+		if len(commands) == 0 {
+			continue
+		}
+		found = true
+		w := widening(reg, agent, with(text))
+		for _, command := range commands {
+			worst = max(worst, powerWith(reg, agent, with(command), w))
+		}
+	}
+	if !found {
+		// No reading shows the command whole, so nothing narrows it.
+		for _, text := range readings {
+			worst = max(worst, powerWith(reg, agent, with(""), widening(reg, agent, with(text))))
+		}
 	}
 	return worst
 }
 
+// widened is what a step's inputs say to widen the agent, wherever in them it is.
+// A flag in a variable reaches the agent's command, so an allowlist wider than read
+// only (allowsMore) or an MCP server anywhere undoes a narrowing of its own.
+type widened struct{ bypass, broad, scoped, allowsMore, mcp bool }
+
+func widening(reg *registry.Registry, agent *registry.Agent, st workflow.Step) widened {
+	w := widened{bypass: matchesAny(agent.BroadWhen, st.With) || matchesAny(agent.BroadWhenEnv, st.Env), mcp: usesMCP(agent, st)}
+	if agent.AllowlistInput != "" {
+		for _, m := range allowedArg.FindAllStringSubmatch(st.With[agent.AllowlistInput].Value, -1) {
+			if tools := splitTools(strings.Trim(m[1], `"'`)); len(tools) > 0 && !allReadOnly(agent, tools) {
+				w.allowsMore = true
+			}
+		}
+	}
+	w.broad = w.bypass || slices.ContainsFunc(agent.ToolInputs, func(name string) bool {
+		return len(ExecTools(reg, toolText(name, st.With[name].Value))) > 0
+	})
+	w.scoped = matchesAny(agent.ScopedWhen, st.With) || matchesAny(agent.ScopedWhenEnv, st.Env)
+	return w
+}
+
+// toolText is the part of an input that names tools. A shell script names `Bash` in
+// prose too; only its allowlist counts.
+func toolText(name, value string) string {
+	if name == registry.RunInput {
+		return allowlists(value)
+	}
+	return value
+}
+
 func powerOf(reg *registry.Registry, agent *registry.Agent, st workflow.Step) registry.Power {
+	return powerWith(reg, agent, st, widening(reg, agent, st))
+}
+
+// powerWith reads what narrows the agent from st alone, and adds what w widens.
+func powerWith(reg *registry.Registry, agent *registry.Agent, st workflow.Step, w widened) registry.Power {
 	// An allowlist only pre-approves tools, so bypass mode goes around one. A deny
 	// list still holds.
-	bypass := matchesAny(agent.BroadWhen, st.With) || matchesAny(agent.BroadWhenEnv, st.Env)
+	bypass := w.bypass || matchesAny(agent.BroadWhen, st.With) || matchesAny(agent.BroadWhenEnv, st.Env)
 	limited := (matchesAny(agent.LimitedWhen, st.With) && !bypass) || matchesAny(agent.LimitedWhenEnv, st.Env) ||
-		(readOnlyAllowlist(agent, st) && !bypass) || (deniesEveryAction(agent, st) && !(bypass && usesMCP(agent, st)))
+		(readOnlyAllowlist(agent, st) && !bypass && !w.allowsMore) ||
+		(deniesEveryAction(agent, st) && !w.allowsMore && !(bypass && (w.mcp || usesMCP(agent, st))))
 	if agent.SettingsInput != "" && readOnlySettings(agent, st.With[agent.SettingsInput].Value) {
 		limited = true
 	}
-	broad := bypass
-	for _, name := range agent.ToolInputs {
-		text := st.With[name].Value
-		// A shell script names `Bash` in prose too; only its allowlist counts.
-		if name == registry.RunInput {
-			text = allowlists(text)
-		}
-		if len(ExecTools(reg, text)) > 0 {
-			broad = true
-		}
-	}
+	own := widening(reg, agent, st)
 	switch {
 	case limited:
 		return registry.Limited
-	case broad:
+	case bypass, w.broad, own.broad:
 		return registry.Broad
-	case matchesAny(agent.ScopedWhen, st.With), matchesAny(agent.ScopedWhenEnv, st.Env):
+	case w.scoped, own.scoped:
 		return registry.Scoped
 	}
 	return agent.DefaultPower()

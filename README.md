@@ -8,6 +8,8 @@ A GitHub Action that audits workflows running AI agents for prompt-injection exp
 
 It reads files only. It needs no token, no API key and no network, so it runs on pull requests from forks.
 
+![Findings appear as annotations on the workflow lines that expose an AI agent: untrusted input, untrusted checkout, open invocation and broad tools](docs/images/annotations.png)
+
 <br/>
 
 ## Why
@@ -101,6 +103,13 @@ This is static analysis, and a clean result is not a proof of safety.
 - [Usage](docs/usage.md): inputs, outputs and SARIF upload
 - [Rules](docs/rules.md): each rule and how severity is decided
 - [Development](docs/DEVELOPMENT.md): building, testing and adding an agent
+
+<br/>
+
+## Related projects
+
+- [whatdies](https://github.com/somaz94/whatdies): A Claude Code hook that shows what a Terraform or kubectl command would destroy before the agent runs it.
+- [agentport](https://github.com/somaz94/agentport): Convert Claude Code skills, slash commands and subagents to Codex and Antigravity formats.
 
 <br/>
 
