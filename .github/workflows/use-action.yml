@@ -32,7 +32,7 @@ jobs:
        github.event.workflow_run.event == 'push')
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Scan the gated fixture
         id: scan
@@ -58,7 +58,7 @@ jobs:
     needs: [smoke-test-clean]
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Scan the risky fixture and write SARIF
         id: scan
@@ -88,7 +88,7 @@ jobs:
     needs: [smoke-test-clean]
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Scan the indirect fixture
         id: scan

@@ -29,7 +29,7 @@ jobs:
           - 5001:5000
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Go unit tests + Docker build and push to local registry
         id: ci
@@ -70,7 +70,7 @@ jobs:
     needs: ci-prelude
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Scan the gated fixture
         id: scan
@@ -96,7 +96,7 @@ jobs:
     needs: ci-prelude
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Scan the risky fixture
         id: scan
@@ -125,7 +125,7 @@ jobs:
     needs: ci-prelude
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Scan the indirect fixture
         id: scan
@@ -154,7 +154,7 @@ jobs:
     needs: ci-prelude
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Scan with the default threshold
         id: scan
@@ -181,7 +181,7 @@ jobs:
     needs: ci-prelude
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Scan without the high rules
         id: scan
@@ -209,7 +209,7 @@ jobs:
     needs: ci-prelude
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Scan and write SARIF
         id: scan
@@ -236,7 +236,7 @@ jobs:
     needs: ci-prelude
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Scan this repository
         uses: ./
