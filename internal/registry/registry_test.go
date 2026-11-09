@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"regexp/syntax"
 	"slices"
 	"strings"
 	"testing"
@@ -125,6 +126,45 @@ func TestFindRunReadsTheShell(t *testing.T) {
 		"SEP=\\\\\nclaude -p x":                            "claude-cli",
 		"echo a; SEP=\\\\\ncodex exec --yolo":              "codex-cli",
 		"echo done \\\\\nclaude -p x":                      "claude-cli",
+		"CLAUDE -p x":                                      "claude-cli",
+		// A substitution in an assignment, a wrapper argument or a path.
+		"X=$(date +%s) claude -p x":     "claude-cli",
+		"X=$((1 + 2)) claude -p x":      "claude-cli",
+		"X=`date +%s` claude -p x":      "claude-cli",
+		"timeout $(cat t) claude -p x":  "claude-cli",
+		"sudo -u $(whoami) claude -p x": "claude-cli",
+		"$(npm bin)/claude -p x":        "claude-cli",
+		// A `)` that ends a case pattern, and a `{` that opens a group.
+		"case $a in\n  a|b) claude -p y ;;\nesac": "claude-cli",
+		"case $a in (\"x y\") claude -p y;; esac": "claude-cli",
+		"case $a in x) :;; y) claude -p y;; esac": "claude-cli",
+		"case $a in x) :;& y) claude -p y;; esac": "claude-cli",
+		"function f { claude -p x; }":             "claude-cli",
+		"function f() { claude -p x; }":           "claude-cli",
+		"if a; then { claude -p x; }; fi":         "claude-cli",
+		"{ { claude -p x; }; }":                   "claude-cli",
+		"a || { claude -p x; }":                   "claude-cli",
+		// An empty substitution as the command word, and bash 5.3's `${ cmd; }`.
+		"$(true) claude -p x":    "claude-cli",
+		"$(:)claude -p x":        "claude-cli",
+		"echo ${ claude -p x; }": "claude-cli",
+		// Quotes and nesting in a substitution.
+		"X=$(echo \") \") claude -p x":           "claude-cli",
+		"X=$(( (1+2)*3 )) claude -p x":           "claude-cli",
+		"X=$(a $(b $(c $(d $(e))))) claude -p x": "claude-cli",
+		"X=$(a $(b $(c))) claude -p x":           "claude-cli",
+		// Escapes, templates and extglob groups in a case pattern.
+		"case $x in a\\ b) claude -p x;; esac":                  "claude-cli",
+		"case $x in\n  ${{ inputs.mode }}) claude -p x;;\nesac": "claude-cli",
+		"case $x in *\\)*) claude -p x;; esac":                  "claude-cli",
+		"case $x in @(a|b)) claude -p x;; esac":                 "claude-cli",
+		"time -p -- { claude -p x; }":                           "claude-cli",
+		"time -p { claude -p x; }":                              "claude-cli",
+		"coproc { claude -p x; }":                               "claude-cli",
+		// A `#` line inside a quote that an earlier body line opened is text.
+		"cat <<E\n$(echo \"\n# \"; claude -p x)\nE": "claude-cli",
+		// A `(` in `${` opens nothing, so the comment line after it keeps its expansion.
+		"cat <<E\n${x//(/}\n# $(claude -p x)\nE": "claude-cli",
 	}
 	for script, id := range cases {
 		a := r.FindRuns(script)
@@ -138,6 +178,11 @@ func TestFindRunReadsTheShell(t *testing.T) {
 		": <<E\n# \\$(claude -p y)\nE",
 		`echo "a b" 'claude -p'`,
 		"echo ${HOME}/bin/claude -p x",
+		"echo $(date) claude -p x",
+		`echo "(see) claude -p x"`,
+		`echo "{ claude -p x }"`,
+		"X=a;b claude -p x",
+		"echo x{ claude -p x",
 	} {
 		if a := r.FindRuns(script); a != nil {
 			t.Errorf("FindRuns(%q) = %v; want none", script, a)
@@ -167,6 +212,17 @@ func TestCommands(t *testing.T) {
 		"x=$(date)\nclaude -p x --model m":                             "claude -p x --model m",
 		"claude -p a --model m; claude -p b":                           "claude -p a --model m\n",
 		"claude -p $'it\\'s;' x; b":                                    "claude -p $'it\\'s;' x",
+		"case $a in x) claude -p y --model m;; esac":                   "claude -p y --model m",
+		"f() { claude -p x; }":                                         "{ claude -p x",
+		// A `)` in a quote or one that closes its own `(` ends no case pattern.
+		"X=\"$(date)\" claude -p x\necho --allowedTools Read": "X=\"$(date)\" claude -p x",
+		"X='a)' claude -p x; b":                               "X='a)' claude -p x",
+		"X=$'a\\')' claude -p x; echo --allowedTools Read":    "X=$'a\\')' claude -p x",
+		"X=a\\) claude -p x; b":                               "X=a\\) claude -p x",
+		"X=\"a)\" claude -p x; b":                             "X=\"a)\" claude -p x",
+		"X=$(date +%s) claude -p x; b":                        "X=$(date +%s) claude -p x",
+		// A separator inside a substitution ends the command too.
+		"claude -p $(a; b) --model m": "claude -p $(a",
 	} {
 		if got := strings.Join(cli.Commands(text), "\n"); got != want {
 			t.Errorf("Commands(%q) = %q; want %q", text, got, want)
@@ -255,6 +311,22 @@ func TestWithoutComments(t *testing.T) {
 		": <<E\n  # x `a` b\nE\nc # d":             ": <<E\n`a` b\nE\nc ",
 		": <<E\n# ${x} b\nE\nc # d":                ": <<E\n${x} b\nE\nc ",
 		": <<'E'\n# $(a) b\nE\nc # d":              ": <<'E'\n\nE\nc ",
+		// Inside a quote or `${` an earlier line opened, a `#` line is text.
+		": <<E\n$(echo \"\n# \"; b)\nE\nc # d": ": <<E\n$(echo \"\n# \"; b)\nE\nc ",
+		": <<E\n${x:-\n# a}\nE\nc # d":         ": <<E\n${x:-\n# a}\nE\nc ",
+		// Inside `$(` or backticks it is a comment, which still keeps its expansions.
+		": <<E\n`echo\n# \" b`\nE\nc # d":                          ": <<E\n`echo\n`\nE\nc ",
+		": <<E\n`echo a # \"\n# b`\nE\nc # d":                      ": <<E\n`echo a # \"\n`\nE\nc ",
+		": <<E\n$(a\n# --allowedTools Read --model m\n)\nE\nc # d": ": <<E\n$(a\n\n)\nE\nc ",
+		": <<E\n$(a\n# x $(b) c\n)\nE\nc # d":                      ": <<E\n$(a\n$(b) c\n)\nE\nc ",
+		": <<E\n$(a # \"\n# b\n)\nE\nc # d":                        ": <<E\n$(a # \"\n\n)\nE\nc ",
+		": <<E\n$(echo \"$(a)\" ')'\n# b\n)\nE\nc # d":             ": <<E\n$(echo \"$(a)\" ')'\n\n)\nE\nc ",
+		": <<E\n$(echo '\n# '\n)\nE\nc # d":                        ": <<E\n$(echo '\n# '\n)\nE\nc ",
+		": <<E\n$(echo \\\"\n# b\n)\nE\nc # d":                     ": <<E\n$(echo \\\"\n\n)\nE\nc ",
+		": <<E\n$( (a); echo \"\n# b\"; c)\nE\nd # e":              ": <<E\n$( (a); echo \"\n# b\"; c)\nE\nd ",
+		// A `(` in `${` or after body text opens nothing.
+		": <<E\n${x//(/}\n# $(a) b\nE\nc # d": ": <<E\n${x//(/}\n$(a) b\nE\nc ",
+		": <<E\n(a \"\n# b\nE\nc # d":         ": <<E\n(a \"\n\nE\nc ",
 	} {
 		if got := WithoutComments(in); got != want {
 			t.Errorf("WithoutComments(%q) = %q; want %q", in, got, want)
@@ -311,11 +383,26 @@ func TestScriptReadingsStayLinear(t *testing.T) {
 	}
 	cli := r.FindRuns("claude -p x")[0]
 	for name, script := range map[string]string{
-		"commands on one line": strings.Repeat("claude -p ", 1<<15),
-		"open quotes":          strings.Repeat("claude -p \"\n", 1<<15),
-		"open backticks":       strings.Repeat("claude -p `", 1<<15),
-		"open parentheses":     "claude -p " + strings.Repeat("(", 1<<18),
-		"quoted words":         strings.Repeat(`"a"'b'\c"`, 1<<15),
+		"commands on one line":     strings.Repeat("claude -p ", 1<<15),
+		"open quotes":              strings.Repeat("claude -p \"\n", 1<<15),
+		"open backticks":           strings.Repeat("claude -p `", 1<<15),
+		"open parentheses":         "claude -p " + strings.Repeat("(", 1<<18),
+		"quoted words":             strings.Repeat(`"a"'b'\c"`, 1<<15),
+		"joined assignments":       strings.Repeat("X=\"\nclaude -p x\n\";", 1<<11),
+		"joined substitutions":     strings.Repeat(";X=$(\nclaude -p x\n)", 1<<11),
+		"piped assignments":        strings.Repeat("|X='\nclaude -p x\n'", 1<<11),
+		"assignments":              strings.Repeat("OUT=$(claude -p \"review\" --model m)\necho \"$OUT\"\n", 1<<11),
+		"short assignments":        strings.Repeat("X=$(claude -p x)\n", 1<<12),
+		"backtick assignments":     strings.Repeat("X=`claude -p x`\n", 1<<12),
+		"array assignments":        strings.Repeat("X=(claude -p x)\n", 1<<12),
+		"quotes in a subst":        strings.Repeat("$(claude -p x''\n", 1<<12),
+		"double quotes in a subst": strings.Repeat("$(claude -p x\"\"\n", 1<<12),
+		"quotes in arithmetic":     strings.Repeat("$((claude -p x''\n", 1<<12),
+		"backtick chain":           strings.Repeat("`` claude -p x\n", 1<<12),
+		"substitution chain":       strings.Repeat("$(\nclaude -p x\n)", 1<<12),
+		"assignment chain":         strings.Repeat("X=$(\nclaude -p x\n) ", 1<<12),
+		"quoted assignments":       strings.Repeat("X=\"\nclaude -p x\n\" ", 1<<12),
+		"leading substitutions":    strings.Repeat("$(a)\nclaude -p x\n", 1<<12),
 	} {
 		start := time.Now()
 		for _, text := range normalized([]string{script}) {
@@ -481,12 +568,49 @@ func TestParseErrors(t *testing.T) {
 		"exec_argument_pattern: '('",
 		"agents: [{id: a, broad_when: [{input: b, pattern: '('}]}]",
 		"agents: [{id: a, run_pattern: '('}]",
+		// It compiles inside the capture group but not on its own.
+		"agents: [{id: a, run_pattern: 'x)|(y'}]",
 		"agents: [{id: a, config_pattern: '('}]",
 	}
 	for _, src := range cases {
 		if _, err := parse([]byte(src)); err == nil {
 			t.Errorf("parse(%q) succeeded; want error", src)
 		}
+	}
+}
+
+func TestRequiredLiterals(t *testing.T) {
+	r, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range r.Agents {
+		if a.run != nil && len(a.names) == 0 {
+			t.Errorf("%s has no name to look for", a.ID)
+		}
+	}
+	for src, want := range map[string][]string{
+		"claude|npx @anthropic-ai/claude-code": {"CLAUDE", "NPX @ANTHROPIC-AI/CLAUDE-CODE"},
+		`a+\s(?:bc){2}`:                        {"BC"},
+		`x*y?|z`:                               nil,
+		`(?:aaa|b)c`:                           {"AAA", "B"},
+	} {
+		tree, err := syntax.Parse(src, syntax.Perl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := requiredLiterals(tree); !slices.Equal(got, want) {
+			t.Errorf("requiredLiterals(%q) = %q; want %q", src, got, want)
+		}
+	}
+	for a, b := range map[string]string{"Claude": "cLAUDE", "\u212a": "k", "\u017f": "S", "é": "É"} {
+		if foldCase(a) != foldCase(b) {
+			t.Errorf("foldCase(%q) = %q, foldCase(%q) = %q", a, foldCase(a), b, foldCase(b))
+		}
+	}
+	cli := r.FindRuns("claude -p x")[0]
+	if !cli.mentionedIn(foldCase("x=1; Claude -p y")) || cli.mentionedIn(foldCase("echo hi")) {
+		t.Error("mentionedIn must find the name whatever its case, and only the name")
 	}
 }
 

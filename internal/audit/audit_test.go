@@ -864,9 +864,44 @@ func TestRunPower(t *testing.T) {
 		"x=`date`\nclaude -p x --allowedTools Read":      registry.Limited,
 		"A=\"--allowedTools Read\"\nclaude -p y":         registry.Scoped,
 		"claude -p $'it\\'s' ; echo --allowedTools Read": registry.Scoped,
+		// A `)` in a quote ends no case pattern, so the command keeps its assignment
+		// and its quote, and a mention after it narrows nothing.
+		"X=\"$(date)\" claude -p x\necho --allowedTools Read":                                      registry.Scoped,
+		"PROMPT=\"$(cat p.md)\" claude -p \"$PROMPT\" --model m\necho \"see --allowedTools Read\"": registry.Scoped,
+		"TOKEN=\"$(gh auth token)\" claude -p x; echo \"" + denyAll + "\"":                         registry.Scoped,
+		"X=\"a)\" claude -p x --model m; echo --allowedTools Read":                                 registry.Scoped,
+		"case $a in x) claude -p y --allowedTools Read;; esac":                                     registry.Limited,
+		"case $a in x) claude -p y;; z) echo --allowedTools Read;; esac":                           registry.Scoped,
+		"X=$'a\\')' claude -p x; echo --allowedTools Read":                                         registry.Scoped,
+		// A run the narrowed command does not hide.
+		"claude -p x --allowedTools Read;\n$(true) claude -p y":                  registry.Scoped,
+		"claude -p x --allowedTools Read;\necho ${ claude -p y; }":               registry.Scoped,
+		"claude -p x --allowedTools Read;\ncase $x in a\\ b) claude -p y;; esac": registry.Scoped,
+		// A here-document line kept as text does not join the agent's own command.
+		"claude -p \"$(cat <<E\n`echo\n# \" --allowedTools Read;\n`\nE\n)\" # --allowedTools Read":      registry.Scoped,
+		"claude -p \"$(cat <<E\n${x:-\n# \" --allowedTools Read;\n}\nE\n)\" # --allowedTools Read":      registry.Scoped,
+		"claude -p \"$(cat a[ <<E\n${x:-\n# \" --allowedTools Read;\"\n}\nE\n)\" # --allowedTools Read": registry.Scoped,
+		// A `(` in `${` opens nothing, so the comment line after it keeps its expansion.
+		"cat <<E >> s.md\n# Report ${title%%(*}\n## $(claude -p summarize --dangerously-skip-permissions)\nE": registry.Broad,
 	} {
 		st := workflow.Step{With: map[string]workflow.Input{registry.RunInput: {Value: script}}}
 		if got := Power(r, cli, st); got != want {
+			t.Errorf("Power(%q) = %v; want %v", script, got, want)
+		}
+	}
+}
+
+func TestRunPowerReadsFlagsBeforeAnOperator(t *testing.T) {
+	r := reg(t)
+	gemini := r.FindRuns("gemini -p x")[0]
+	for script, want := range map[string]registry.Power{
+		"REVIEW=$(gemini -p \"$(cat d)\" $( [ -n \"$M\" ] && echo -m \"$M\") -y)": registry.Broad,
+		"gemini -p $(cat a; cat b) -y; echo done":                                 registry.Broad,
+		"gemini -p `echo a; echo b` -y;":                                          registry.Broad,
+		"gemini -p \"-y is a flag\"":                                              registry.Scoped,
+	} {
+		st := workflow.Step{With: map[string]workflow.Input{registry.RunInput: {Value: script}}}
+		if got := Power(r, gemini, st); got != want {
 			t.Errorf("Power(%q) = %v; want %v", script, got, want)
 		}
 	}

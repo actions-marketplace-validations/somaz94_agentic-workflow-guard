@@ -131,7 +131,7 @@ agents:
     actor_check: false
     power: scoped
     broad_when:
-      - {input: run, pattern: '(^|\s)(--yes|-y|--yolo)(\s|$)|--approval-mode[ =]yolo'}
+      - {input: run, pattern: '(^|[\s;&|(\x60])(--yes|-y|--yolo)([\s;&|)<>\x60]|$)|--approval-mode[ =]yolo'}
 
   - id: copilot-cli
     run_pattern: '(?:copilot|(?:npx|bunx|pnpm dlx)\s+(?:-\S+\s+)*@github/copilot(?:@\S+)?)\s[^\n]*(?:-p|--prompt)(?:[\s=;&|)<>\x60]|$)'
