@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.0.7](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.6...v1.0.7) (2026-11-09)
+
+### Bug Fixes
+
+- anchor agent commands where the shell starts one and track here-document expansions ([5df8199](https://github.com/somaz94/agentic-workflow-guard/commit/5df8199228798080b3998e2682768ef065922b53))
+
+### Chores
+
+- bump the action image to v1.0.7 ([bfbbee7](https://github.com/somaz94/agentic-workflow-guard/commit/bfbbee7416d590d7eab3acd3f21df0a3701e8147))
+
+### Contributors
+
+- somaz
+
+<br/>
+
 ## [v1.0.6](https://github.com/somaz94/agentic-workflow-guard/compare/v1.0.5...v1.0.6) (2026-11-06)
 
 ### Bug Fixes
